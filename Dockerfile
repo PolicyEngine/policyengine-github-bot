@@ -15,5 +15,5 @@ RUN uv sync --frozen --no-dev
 # Expose port
 EXPOSE 8080
 
-# Run the application
-CMD ["uv", "run", "uvicorn", "policyengine_github_bot.main:app", "--host", "0.0.0.0", "--port", "8080"]
+# Run the application using the venv directly
+CMD [".venv/bin/uvicorn", "policyengine_github_bot.main:app", "--host", "0.0.0.0", "--port", "8080"]
