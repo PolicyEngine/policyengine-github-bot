@@ -12,6 +12,9 @@ from policyengine_github_bot.models import (
     PRReviewResponse,
 )
 
+# Instrument pydantic-ai with logfire for tracing LLM calls
+logfire.instrument_pydantic_ai()
+
 BASE_SYSTEM_PROMPT = """You are PolicyEngine's GitHub bot.
 
 Be concise. Avoid unnecessary preamble or filler.
