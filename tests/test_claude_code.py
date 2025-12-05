@@ -32,7 +32,10 @@ class TestRunClaudeCode:
             assert result == "This is the analysis output"
             mock_run.assert_called_once()
             call_args = mock_run.call_args
-            assert call_args[0][0] == ["claude", "-p", "Analyse this code", "--output-format", "text"]
+            assert call_args[0][0] == [
+                "claude", "-p", "Analyse this code",
+                "--output-format", "text", "--dangerously-skip-permissions"
+            ]
             assert call_args[1]["cwd"] == tmp_path
 
     def test_run_claude_code_failure(self, tmp_path: Path):
