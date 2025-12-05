@@ -68,6 +68,8 @@ async def classify_request(text: str) -> bool:
     """
     import anthropic
 
+    logfire.info("[classify] Classifying request", text_preview=text[:100])
+
     client = anthropic.AsyncAnthropic()
 
     prompt = f"""Classify this GitHub issue/comment. Does it require codebase access?
@@ -84,6 +86,7 @@ or "N" (no codebase needed - general questions, explanations, advice)."""
     )
 
     result = response.content[0].text.strip().upper()
+    logfire.info("[classify] Result", result=result, needs_codebase=(result == "Y"))
     return result == "Y"
 
 

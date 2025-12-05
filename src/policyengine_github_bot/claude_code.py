@@ -37,7 +37,15 @@ def run_claude_code(
     logfire.info(f"[claude-code] Running in {workdir}")
 
     result = subprocess.run(
-        ["claude", "-p", prompt, "--output-format", "text", "--dangerously-skip-permissions"],
+        [
+            "claude",
+            "-p",
+            prompt,
+            "--output-format",
+            "text",
+            "--allowedTools",
+            "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch",
+        ],
         cwd=workdir,
         capture_output=True,
         text=True,
@@ -68,7 +76,13 @@ def run_claude_code_streaming(
     logfire.info(f"[claude-code] Starting streaming in {workdir}")
 
     proc = subprocess.Popen(
-        ["claude", "-p", prompt, "--dangerously-skip-permissions"],
+        [
+            "claude",
+            "-p",
+            prompt,
+            "--allowedTools",
+            "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch",
+        ],
         cwd=workdir,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

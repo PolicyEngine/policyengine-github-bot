@@ -32,8 +32,13 @@ class TestRunClaudeCode:
             mock_run.assert_called_once()
             call_args = mock_run.call_args
             assert call_args[0][0] == [
-                "claude", "-p", "Analyse this code",
-                "--output-format", "text", "--dangerously-skip-permissions"
+                "claude",
+                "-p",
+                "Analyse this code",
+                "--output-format",
+                "text",
+                "--allowedTools",
+                "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch",
             ]
             assert call_args[1]["cwd"] == tmp_path
 
