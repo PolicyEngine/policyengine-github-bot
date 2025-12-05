@@ -1,14 +1,17 @@
 """FastAPI application for PolicyEngine GitHub bot."""
 
-import logging
-
+import logfire
 from fastapi import FastAPI
 
+from policyengine_github_bot.config import get_settings
 from policyengine_github_bot.webhooks import router as webhook_router
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+settings = get_settings()
+
+logfire.configure(
+    token=settings.logfire_token,
+    environment=settings.logfire_env,
+    service_name="policyengine-github-bot",
 )
 
 app = FastAPI(
@@ -16,6 +19,8 @@ app = FastAPI(
     description="Responds to issues and reviews PRs on PolicyEngine repositories.",
     version="0.1.0",
 )
+
+logfire.instrument_fastapi(app)
 
 app.include_router(webhook_router)
 

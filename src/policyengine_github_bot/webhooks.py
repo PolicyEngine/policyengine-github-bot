@@ -2,15 +2,14 @@
 
 import hashlib
 import hmac
-import logging
 
+import logfire
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from policyengine_github_bot.config import get_settings
 from policyengine_github_bot.github_auth import get_github_client
 from policyengine_github_bot.llm import generate_issue_response
 
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -81,27 +80,34 @@ async def handle_issue_event(data: dict):
     installation_id = installation.get("id")
 
     if not installation_id:
-        logger.error("No installation ID in webhook payload")
+        logfire.error("No installation ID in webhook payload")
         return
 
-    logger.info(f"Handling new issue #{issue_number} in {repo_full_name}")
-
-    # Get authenticated GitHub client
-    github = get_github_client(installation_id)
-
-    # Fetch CLAUDE.md for context
-    claude_md = fetch_claude_md(github, repo_full_name)
-
-    # Generate response
-    response_text = generate_issue_response(
+    with logfire.span(
+        "handle_issue",
+        repo=repo_full_name,
+        issue_number=issue_number,
         issue_title=issue_title,
-        issue_body=issue_body,
-        repo_context=claude_md,
-    )
+    ):
+        # Get authenticated GitHub client
+        github = get_github_client(installation_id)
 
-    # Post comment
-    gh_repo = github.get_repo(repo_full_name)
-    gh_issue = gh_repo.get_issue(issue_number)
-    gh_issue.create_comment(response_text)
+        # Fetch CLAUDE.md for context
+        with logfire.span("fetch_claude_md"):
+            claude_md = fetch_claude_md(github, repo_full_name)
 
-    logger.info(f"Posted response to issue #{issue_number}")
+        # Generate response
+        with logfire.span("generate_response"):
+            response_text = generate_issue_response(
+                issue_title=issue_title,
+                issue_body=issue_body,
+                repo_context=claude_md,
+            )
+
+        # Post comment
+        with logfire.span("post_comment"):
+            gh_repo = github.get_repo(repo_full_name)
+            gh_issue = gh_repo.get_issue(issue_number)
+            gh_issue.create_comment(response_text)
+
+        logfire.info(f"Posted response to issue #{issue_number}")

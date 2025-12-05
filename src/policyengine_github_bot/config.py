@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # Optional: default model
     anthropic_model: str = "claude-sonnet-4-20250514"
 
+    # Logfire
+    logfire_token: str | None = None
+    logfire_env: str = "development"
+
     # Server config
     host: str = "0.0.0.0"
     port: int = 8080
