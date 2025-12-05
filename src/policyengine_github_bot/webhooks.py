@@ -444,13 +444,17 @@ async def review_pull_request(payload: PullRequestWebhookPayload):
             gh_repo = github.get_repo(payload.repository.full_name)
             gh_pr = gh_repo.get_pull(payload.pull_request.number)
 
-            # Get the diff - build it from file patches
+            # Get the diff - build it from file patches with line number context
             diff = ""
             try:
                 diff_parts = []
                 for f in gh_pr.get_files():
                     if f.patch:
-                        diff_parts.append(f"--- a/{f.filename}\n+++ b/{f.filename}\n{f.patch}")
+                        # Add file header and patch
+                        file_diff = f"File: {f.filename}\n"
+                        file_diff += f"--- a/{f.filename}\n+++ b/{f.filename}\n"
+                        file_diff += f.patch
+                        diff_parts.append(file_diff)
                 diff = "\n\n".join(diff_parts)
                 logfire.info("Fetched PR diff", diff_length=len(diff))
             except Exception as e:

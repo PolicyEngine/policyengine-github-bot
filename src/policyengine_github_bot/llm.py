@@ -51,6 +51,13 @@ You review pull requests. When reviewing:
 6. Be constructive - suggest improvements, don't just criticise
 7. Focus on substance over style (assume formatters handle style)
 
+IMPORTANT: You MUST provide inline comments on specific lines of code.
+- Each comment needs: path (file path), line (line number in the new file), body (your comment)
+- The line number should be from the RIGHT side of the diff (the new version)
+- Look at @@ hunk headers for line numbers (e.g. @@ -10,5 +12,7 @@ means new lines start at 12)
+- Add comments for: bugs, potential issues, suggestions, questions about the code
+- Don't comment on trivial style issues
+
 For approval field, use exactly one of: APPROVE, REQUEST_CHANGES, or COMMENT"""
     )
 
@@ -139,12 +146,14 @@ Description:
 Files changed:
 {files_summary}
 
-Diff:
-```
+Diff (with line numbers from @@ headers showing new file line positions):
+```diff
 {diff}
 ```
 
-Provide a thorough but concise review."""
+Provide a thorough but concise review. Include inline comments on specific lines where you have \
+feedback. Use the line numbers from the RIGHT side of the diff (the + lines in the new version). \
+Each inline comment should reference a specific file path and line number."""
 
     result = await agent.run(prompt)
 
