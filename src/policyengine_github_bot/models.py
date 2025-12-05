@@ -36,11 +36,30 @@ class GitHubInstallation(BaseModel):
     id: int
 
 
+class GitHubComment(BaseModel):
+    """GitHub comment information."""
+
+    id: int
+    body: str
+    user: GitHubUser
+
+
 class IssueWebhookPayload(BaseModel):
     """Payload for issue webhook events."""
 
     action: str
     issue: GitHubIssue
+    repository: GitHubRepository
+    installation: GitHubInstallation | None = None
+    sender: GitHubUser
+
+
+class IssueCommentWebhookPayload(BaseModel):
+    """Payload for issue_comment webhook events."""
+
+    action: str
+    issue: GitHubIssue
+    comment: GitHubComment
     repository: GitHubRepository
     installation: GitHubInstallation | None = None
     sender: GitHubUser

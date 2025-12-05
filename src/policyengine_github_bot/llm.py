@@ -39,6 +39,7 @@ def get_issue_agent(repo_context: str | None = None) -> Agent[None, IssueRespons
 async def generate_issue_response(
     issue: GitHubIssue,
     repo_context: str | None = None,
+    conversation: list[dict] | None = None,
 ) -> str:
     """Generate a response to a GitHub issue using Claude."""
     logfire.info(
@@ -46,6 +47,7 @@ async def generate_issue_response(
         issue_number=issue.number,
         issue_title=issue.title,
         has_repo_context=repo_context is not None,
+        conversation_length=len(conversation) if conversation else 0,
     )
 
     agent = get_issue_agent(repo_context)
@@ -55,9 +57,15 @@ async def generate_issue_response(
 Title: {issue.title}
 
 Body:
-{issue.body or "(no body provided)"}
+{issue.body or "(no body provided)"}"""
 
-Provide a helpful response."""
+    if conversation:
+        prompt += "\n\nConversation history:\n"
+        for comment in conversation:
+            role = "You" if comment["is_bot"] else comment["author"]
+            prompt += f"\n{role}:\n{comment['body']}\n"
+
+    prompt += "\n\nProvide a helpful response."
 
     result = await agent.run(prompt)
 
