@@ -130,7 +130,6 @@ async def get_review_threads(
         .get("nodes", [])
     )
 
-    logfire.info("Fetched review threads", count=len(threads))
     return threads
 
 
@@ -161,8 +160,9 @@ async def resolve_review_thread(installation_id: int, thread_id: str) -> bool:
             .get("isResolved", False)
         )
 
-        logfire.info("Resolved review thread", thread_id=thread_id, success=resolved)
+        if resolved:
+            logfire.info(f"[graphql] resolved thread {thread_id[:8]}...")
         return resolved
     except Exception as e:
-        logfire.error("Failed to resolve thread", thread_id=thread_id, error=str(e))
+        logfire.error(f"[graphql] failed to resolve thread {thread_id[:8]}...: {e}")
         return False

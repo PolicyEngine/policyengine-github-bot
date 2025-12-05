@@ -59,10 +59,11 @@ def fetch_claude_md(github, repo_full_name: str) -> str | None:
     try:
         repo = github.get_repo(repo_full_name)
         contents = repo.get_contents("CLAUDE.md")
-        logfire.info("Found CLAUDE.md", repo=repo_full_name, size=len(contents.decoded_content))
+        size = len(contents.decoded_content)
+        logfire.info(f"[context] {repo_full_name} - loaded CLAUDE.md ({size} bytes)")
         return contents.decoded_content.decode("utf-8")
-    except Exception as e:
-        logfire.info("No CLAUDE.md found", repo=repo_full_name, error=str(e))
+    except Exception:
+        logfire.info(f"[context] {repo_full_name} - no CLAUDE.md")
         return None
 
 
@@ -75,21 +76,11 @@ def bot_is_in_conversation(github, repo_full_name: str, issue_number: int) -> bo
 
         for comment in comments:
             if comment.user.login.lower() == BOT_USERNAME.lower():
-                logfire.info(
-                    "Bot found in conversation",
-                    repo=repo_full_name,
-                    issue_number=issue_number,
-                )
                 return True
 
         return False
     except Exception as e:
-        logfire.error(
-            "Error checking conversation history",
-            repo=repo_full_name,
-            issue_number=issue_number,
-            error=str(e),
-        )
+        logfire.error(f"[context] {repo_full_name}#{issue_number} - error: {e}")
         return False
 
 
@@ -112,12 +103,7 @@ def get_conversation_context(github, repo_full_name: str, issue_number: int) -> 
 
         return context
     except Exception as e:
-        logfire.error(
-            "Error fetching conversation context",
-            repo=repo_full_name,
-            issue_number=issue_number,
-            error=str(e),
-        )
+        logfire.error(f"[context] {repo_full_name}#{issue_number} - error: {e}")
         return []
 
 
@@ -131,16 +117,25 @@ async def handle_webhook(
     settings = get_settings()
     payload = await request.body()
 
-    logfire.info("Webhook received", event=x_github_event, payload_size=len(payload))
+    data = await request.json()
+
+    # Extract key context for logging
+    repo = data.get("repository", {}).get("full_name", "unknown")
+    sender = data.get("sender", {}).get("login", "unknown")
+    action = data.get("action", "")
+
+    logfire.info(
+        f"[{x_github_event}] {repo} by @{sender}",
+        event=x_github_event,
+        action=action,
+        repo=repo,
+        sender=sender,
+    )
 
     # Verify webhook signature
     if not verify_signature(payload, x_hub_signature_256 or "", settings.github_webhook_secret):
-        logfire.error("Webhook signature verification failed", event=x_github_event)
+        logfire.error(f"[{x_github_event}] Signature verification failed", event=x_github_event)
         raise HTTPException(status_code=401, detail="Invalid signature")
-
-    logfire.info("Webhook signature verified", event=x_github_event)
-
-    data = await request.json()
 
     if x_github_event == "issues":
         await handle_issue_event(data)
@@ -151,10 +146,10 @@ async def handle_webhook(
     elif x_github_event == "pull_request_review":
         await handle_pull_request_review_event(data)
     elif x_github_event == "ping":
-        logfire.info("Ping received", zen=data.get("zen", ""))
+        logfire.info("[ping] GitHub ping received", zen=data.get("zen", ""))
         return {"status": "pong"}
     else:
-        logfire.info("Unhandled event type", event=x_github_event)
+        logfire.info(f"[{x_github_event}] Unhandled event type", event=x_github_event)
 
     return {"status": "ok"}
 
@@ -164,25 +159,17 @@ async def handle_issue_event(data: dict):
     try:
         payload = IssueWebhookPayload.model_validate(data)
     except ValidationError as e:
-        logfire.error("Invalid issue webhook payload", errors=e.errors())
+        logfire.error("[issue] Invalid webhook payload", errors=e.errors())
         return
 
-    logfire.info(
-        "Issue event received",
-        action=payload.action,
-        repo=payload.repository.full_name,
-        issue_number=payload.issue.number,
-        issue_title=payload.issue.title,
-        sender=payload.sender.login,
-    )
+    repo = payload.repository.full_name
+    issue_num = payload.issue.number
+    sender = payload.sender.login
+    prefix = f"[issue] {repo}#{issue_num} @{sender}"
 
     # Only respond to newly opened issues
     if payload.action != "opened":
-        logfire.info(
-            "Ignoring issue event",
-            action=payload.action,
-            reason="not an 'opened' action",
-        )
+        logfire.info(f"{prefix} - skipped (action={payload.action})")
         return
 
     # Check if @policyengine is mentioned in title or body
@@ -190,27 +177,13 @@ async def handle_issue_event(data: dict):
     mentioned_in_body = contains_mention(payload.issue.body)
 
     if not mentioned_in_title and not mentioned_in_body:
-        logfire.info(
-            "Ignoring issue - no @policyengine mention",
-            repo=payload.repository.full_name,
-            issue_number=payload.issue.number,
-        )
+        logfire.info(f"{prefix} - skipped (no bot mention)")
         return
 
-    logfire.info(
-        "Bot mentioned in new issue",
-        repo=payload.repository.full_name,
-        issue_number=payload.issue.number,
-        mentioned_in_title=mentioned_in_title,
-        mentioned_in_body=mentioned_in_body,
-    )
+    logfire.info(f"{prefix} - bot mentioned, will respond")
 
     if not payload.installation:
-        logfire.error(
-            "No installation ID in webhook payload",
-            repo=payload.repository.full_name,
-            issue_number=payload.issue.number,
-        )
+        logfire.error(f"{prefix} - no installation ID")
         return
 
     await respond_to_issue(payload)
@@ -221,45 +194,30 @@ async def handle_issue_comment_event(data: dict):
     try:
         payload = IssueCommentWebhookPayload.model_validate(data)
     except ValidationError as e:
-        logfire.error("Invalid issue_comment webhook payload", errors=e.errors())
+        logfire.error("[comment] Invalid webhook payload", errors=e.errors())
         return
 
     # Check if this is a PR comment (PRs have a pull_request key in the issue)
     is_pr = "pull_request" in data.get("issue", {})
+    event_type = "pr_comment" if is_pr else "comment"
 
-    logfire.info(
-        "Issue comment event received",
-        action=payload.action,
-        repo=payload.repository.full_name,
-        issue_number=payload.issue.number,
-        comment_author=payload.comment.user.login,
-        is_pr=is_pr,
-    )
+    repo = payload.repository.full_name
+    issue_num = payload.issue.number
+    commenter = payload.comment.user.login
+    prefix = f"[{event_type}] {repo}#{issue_num} @{commenter}"
 
     # Only respond to new comments
     if payload.action != "created":
-        logfire.info(
-            "Ignoring comment event",
-            action=payload.action,
-            reason="not a 'created' action",
-        )
+        logfire.info(f"{prefix} - skipped (action={payload.action})")
         return
 
     # Ignore our own comments to prevent loops
     if payload.comment.user.login.lower() == BOT_USERNAME.lower():
-        logfire.info(
-            "Ignoring own comment",
-            repo=payload.repository.full_name,
-            issue_number=payload.issue.number,
-        )
+        logfire.info(f"{prefix} - skipped (own comment)")
         return
 
     if not payload.installation:
-        logfire.error(
-            "No installation ID in webhook payload",
-            repo=payload.repository.full_name,
-            issue_number=payload.issue.number,
-        )
+        logfire.error(f"{prefix} - no installation ID")
         return
 
     # Check if we should respond
@@ -275,33 +233,16 @@ async def handle_issue_comment_event(data: dict):
         )
 
         if not in_conversation:
-            logfire.info(
-                "Ignoring comment - not mentioned and not in conversation",
-                repo=payload.repository.full_name,
-                issue_number=payload.issue.number,
-            )
+            logfire.info(f"{prefix} - skipped (no mention, not in conversation)")
             return
 
-        logfire.info(
-            "Responding to conversation we're part of",
-            repo=payload.repository.full_name,
-            issue_number=payload.issue.number,
-        )
+        logfire.info(f"{prefix} - continuing existing conversation")
     else:
-        logfire.info(
-            "Bot mentioned in comment",
-            repo=payload.repository.full_name,
-            issue_number=payload.issue.number,
-            is_pr=is_pr,
-        )
+        logfire.info(f"{prefix} - bot mentioned")
 
     # If this is a PR and we're mentioned, do a re-review
     if is_pr and mentioned:
-        logfire.info(
-            "Re-review requested via PR comment",
-            repo=payload.repository.full_name,
-            pr_number=payload.issue.number,
-        )
+        logfire.info(f"{prefix} - triggering PR re-review")
         await handle_pr_rereview(payload)
         return
 
@@ -322,59 +263,36 @@ async def respond_to_issue(
     comment_context: str | None = None,
 ):
     """Generate and post a response to an issue."""
-    with logfire.span(
-        "respond_to_issue",
-        repo=payload.repository.full_name,
-        issue_number=payload.issue.number,
-        issue_title=payload.issue.title,
-        has_comment_context=comment_context is not None,
-    ):
-        logfire.info("Authenticating with GitHub", installation_id=payload.installation.id)
+    repo = payload.repository.full_name
+    issue_num = payload.issue.number
+    prefix = f"[issue] {repo}#{issue_num}"
+
+    with logfire.span(prefix, repo=repo, issue_number=issue_num):
         github = get_github_client(payload.installation.id)
 
         # Fetch CLAUDE.md for context
-        with logfire.span("fetch_claude_md", repo=payload.repository.full_name):
-            claude_md = fetch_claude_md(github, payload.repository.full_name)
+        claude_md = fetch_claude_md(github, repo)
 
         # Get conversation history if responding to a comment
         conversation = []
         if comment_context:
-            with logfire.span("fetch_conversation", issue_number=payload.issue.number):
-                conversation = get_conversation_context(
-                    github,
-                    payload.repository.full_name,
-                    payload.issue.number,
-                )
-                logfire.info(
-                    "Fetched conversation context",
-                    comment_count=len(conversation),
-                )
+            conversation = get_conversation_context(github, repo, issue_num)
+            logfire.info(f"{prefix} - loaded {len(conversation)} previous comments")
 
         # Generate response
-        with logfire.span("generate_response", issue_number=payload.issue.number):
-            response_text = await generate_issue_response(
-                issue=payload.issue,
-                repo_context=claude_md,
-                conversation=conversation if conversation else None,
-            )
+        logfire.info(f"{prefix} - generating response...")
+        response_text = await generate_issue_response(
+            issue=payload.issue,
+            repo_context=claude_md,
+            conversation=conversation if conversation else None,
+        )
 
         # Post comment
-        with logfire.span("post_comment", issue_number=payload.issue.number):
-            logfire.info(
-                "Posting comment",
-                repo=payload.repository.full_name,
-                issue_number=payload.issue.number,
-                response_length=len(response_text),
-            )
-            gh_repo = github.get_repo(payload.repository.full_name)
-            gh_issue = gh_repo.get_issue(payload.issue.number)
-            gh_issue.create_comment(response_text)
+        gh_repo = github.get_repo(repo)
+        gh_issue = gh_repo.get_issue(issue_num)
+        gh_issue.create_comment(response_text)
 
-        logfire.info(
-            "Successfully responded to issue",
-            repo=payload.repository.full_name,
-            issue_number=payload.issue.number,
-        )
+        logfire.info(f"{prefix} - responded ({len(response_text)} chars)")
 
 
 async def handle_pull_request_event(data: dict):
@@ -382,17 +300,13 @@ async def handle_pull_request_event(data: dict):
     try:
         payload = PullRequestWebhookPayload.model_validate(data)
     except ValidationError as e:
-        logfire.error("Invalid pull_request webhook payload", errors=e.errors())
+        logfire.error("[pr] Invalid webhook payload", errors=e.errors())
         return
 
-    logfire.info(
-        "Pull request event received",
-        action=payload.action,
-        repo=payload.repository.full_name,
-        pr_number=payload.pull_request.number,
-        pr_title=payload.pull_request.title,
-        sender=payload.sender.login,
-    )
+    repo = payload.repository.full_name
+    pr_num = payload.pull_request.number
+    sender = payload.sender.login
+    prefix = f"[pr] {repo}#{pr_num} @{sender}"
 
     # Check if this is a review request for our bot
     if payload.action == "review_requested":
@@ -400,41 +314,27 @@ async def handle_pull_request_event(data: dict):
         reviewer_login = requested_reviewer.get("login", "").lower()
 
         if reviewer_login in [u.lower() for u in BOT_USERNAMES]:
-            logfire.info(
-                "Review requested from bot",
-                repo=payload.repository.full_name,
-                pr_number=payload.pull_request.number,
-                requested_reviewer=reviewer_login,
-            )
+            logfire.info(f"{prefix} - review requested, will review")
             await review_pull_request(payload)
             return
 
     # Check if mentioned in PR body on open
     if payload.action == "opened":
         if contains_mention(payload.pull_request.body):
-            logfire.info(
-                "Bot mentioned in new PR",
-                repo=payload.repository.full_name,
-                pr_number=payload.pull_request.number,
-            )
+            logfire.info(f"{prefix} - bot mentioned in new PR, will review")
             await review_pull_request(payload)
             return
 
-    logfire.info(
-        "Ignoring pull request event",
-        action=payload.action,
-        reason="not a review request for bot or mention",
-    )
+    logfire.info(f"{prefix} - skipped (action={payload.action}, no bot involvement)")
 
 
 async def handle_pull_request_review_event(data: dict):
     """Handle pull request review events - currently just logging."""
-    logfire.info(
-        "Pull request review event received",
-        action=data.get("action"),
-        repo=data.get("repository", {}).get("full_name"),
-        pr_number=data.get("pull_request", {}).get("number"),
-    )
+    repo = data.get("repository", {}).get("full_name", "unknown")
+    pr_num = data.get("pull_request", {}).get("number", "?")
+    action = data.get("action", "")
+    reviewer = data.get("review", {}).get("user", {}).get("login", "unknown")
+    logfire.info(f"[pr_review] {repo}#{pr_num} @{reviewer} - {action}")
 
 
 async def review_pull_request(
@@ -443,150 +343,120 @@ async def review_pull_request(
     open_threads: list[dict] | None = None,
 ):
     """Generate and post a PR review."""
+    repo = payload.repository.full_name
+    pr_num = payload.pull_request.number
+    is_rereview = rereview_context is not None
+    review_type = "re-review" if is_rereview else "review"
+    prefix = f"[{review_type}] {repo}#{pr_num}"
+
     if not payload.installation:
-        logfire.error(
-            "No installation ID in webhook payload",
-            repo=payload.repository.full_name,
-            pr_number=payload.pull_request.number,
-        )
+        logfire.error(f"{prefix} - no installation ID")
         return
 
-    with logfire.span(
-        "review_pull_request",
-        repo=payload.repository.full_name,
-        pr_number=payload.pull_request.number,
-        pr_title=payload.pull_request.title,
-    ):
-        logfire.info("Authenticating with GitHub", installation_id=payload.installation.id)
+    with logfire.span(prefix, repo=repo, pr_number=pr_num, is_rereview=is_rereview):
         github = get_github_client(payload.installation.id)
 
         # Fetch CLAUDE.md for context
-        with logfire.span("fetch_claude_md", repo=payload.repository.full_name):
-            claude_md = fetch_claude_md(github, payload.repository.full_name)
+        claude_md = fetch_claude_md(github, repo)
 
         # Get PR diff and files
-        with logfire.span("fetch_pr_details", pr_number=payload.pull_request.number):
-            gh_repo = github.get_repo(payload.repository.full_name)
-            gh_pr = gh_repo.get_pull(payload.pull_request.number)
+        logfire.info(f"{prefix} - fetching diff and files...")
+        gh_repo = github.get_repo(repo)
+        gh_pr = gh_repo.get_pull(pr_num)
 
-            # Get the diff - build it from file patches with line number context
-            diff = ""
-            try:
-                diff_parts = []
-                for f in gh_pr.get_files():
-                    if f.patch:
-                        # Add file header and patch
-                        file_diff = f"File: {f.filename}\n"
-                        file_diff += f"--- a/{f.filename}\n+++ b/{f.filename}\n"
-                        file_diff += f.patch
-                        diff_parts.append(file_diff)
-                diff = "\n\n".join(diff_parts)
-                logfire.info("Fetched PR diff", diff_length=len(diff))
-            except Exception as e:
-                logfire.error("Failed to fetch PR diff", error=str(e))
-
-            # Get files changed
-            files_changed = []
+        # Get the diff - build it from file patches with line number context
+        diff = ""
+        try:
+            diff_parts = []
             for f in gh_pr.get_files():
-                files_changed.append(
-                    {
-                        "filename": f.filename,
-                        "additions": f.additions,
-                        "deletions": f.deletions,
-                        "status": f.status,
-                    }
-                )
-            logfire.info("Fetched PR files", file_count=len(files_changed))
+                if f.patch:
+                    file_diff = f"File: {f.filename}\n"
+                    file_diff += f"--- a/{f.filename}\n+++ b/{f.filename}\n"
+                    file_diff += f.patch
+                    diff_parts.append(file_diff)
+            diff = "\n\n".join(diff_parts)
+        except Exception as e:
+            logfire.error(f"{prefix} - failed to fetch diff: {e}")
+
+        # Get files changed
+        files_changed = []
+        for f in gh_pr.get_files():
+            files_changed.append(
+                {
+                    "filename": f.filename,
+                    "additions": f.additions,
+                    "deletions": f.deletions,
+                    "status": f.status,
+                }
+            )
+
+        logfire.info(f"{prefix} - {len(files_changed)} files, {len(diff)} chars diff")
 
         # Generate review
-        with logfire.span("generate_review", pr_number=payload.pull_request.number):
-            review = await generate_pr_review(
-                pr=payload.pull_request,
-                diff=diff,
-                files_changed=files_changed,
-                repo_context=claude_md,
-                rereview_context=rereview_context,
-                open_threads=open_threads,
+        logfire.info(f"{prefix} - generating review...")
+        review = await generate_pr_review(
+            pr=payload.pull_request,
+            diff=diff,
+            files_changed=files_changed,
+            repo_context=claude_md,
+            rereview_context=rereview_context,
+            open_threads=open_threads,
+        )
+
+        # Map approval to GitHub event type
+        event_map = {
+            "APPROVE": "APPROVE",
+            "REQUEST_CHANGES": "REQUEST_CHANGES",
+            "COMMENT": "COMMENT",
+        }
+        event = event_map.get(review.approval.upper(), "COMMENT")
+
+        # Build inline comments for the review
+        review_comments = []
+        for comment in review.comments:
+            review_comments.append(
+                {
+                    "path": comment.path,
+                    "line": comment.line,
+                    "body": comment.body,
+                }
             )
 
-        # Post review as a single unified review with all inline comments
-        with logfire.span("post_review", pr_number=payload.pull_request.number):
-            logfire.info(
-                "Posting PR review",
-                repo=payload.repository.full_name,
-                pr_number=payload.pull_request.number,
-                approval=review.approval,
-                inline_comment_count=len(review.comments),
+        # Create a single review with all comments
+        logfire.info(f"{prefix} - posting {event} with {len(review_comments)} inline comments")
+        if review_comments:
+            gh_pr.create_review(
+                body=review.summary,
+                event=event,
+                comments=review_comments,
             )
-
-            # Map approval to GitHub event type
-            event_map = {
-                "APPROVE": "APPROVE",
-                "REQUEST_CHANGES": "REQUEST_CHANGES",
-                "COMMENT": "COMMENT",
-            }
-            event = event_map.get(review.approval.upper(), "COMMENT")
-
-            # Build inline comments for the review
-            review_comments = []
-            for comment in review.comments:
-                review_comments.append(
-                    {
-                        "path": comment.path,
-                        "line": comment.line,
-                        "body": comment.body,
-                    }
-                )
-
-            # Create a single review with all comments
-            if review_comments:
-                gh_pr.create_review(
-                    body=review.summary,
-                    event=event,
-                    comments=review_comments,
-                )
-            else:
-                gh_pr.create_review(body=review.summary, event=event)
+        else:
+            gh_pr.create_review(body=review.summary, event=event)
 
         # Resolve threads that the LLM identified as addressed
         if open_threads and review.threads_to_resolve:
-            with logfire.span(
-                "resolve_threads",
-                pr_number=payload.pull_request.number,
-                threads_to_resolve=review.threads_to_resolve,
-            ):
-                for idx in review.threads_to_resolve:
-                    if 0 <= idx < len(open_threads):
-                        thread_id = open_threads[idx].get("id")
-                        if thread_id:
-                            await resolve_review_thread(
-                                payload.installation.id,
-                                thread_id,
-                            )
+            logfire.info(f"{prefix} - resolving {len(review.threads_to_resolve)} threads")
+            for idx in review.threads_to_resolve:
+                if 0 <= idx < len(open_threads):
+                    thread_id = open_threads[idx].get("id")
+                    if thread_id:
+                        await resolve_review_thread(payload.installation.id, thread_id)
 
-        logfire.info(
-            "Successfully reviewed PR",
-            repo=payload.repository.full_name,
-            pr_number=payload.pull_request.number,
-            approval=review.approval,
-            threads_resolved=len(review.threads_to_resolve) if open_threads else 0,
-        )
+        logfire.info(f"{prefix} - done ({event})")
 
 
 async def handle_pr_rereview(payload: IssueCommentWebhookPayload):
     """Handle a re-review request on a PR via comment mention."""
-    github = get_github_client(payload.installation.id)
-    repo_full_name = payload.repository.full_name
-    pr_number = payload.issue.number
+    repo = payload.repository.full_name
+    pr_num = payload.issue.number
+    requester = payload.sender.login
+    prefix = f"[re-review] {repo}#{pr_num} @{requester}"
 
-    with logfire.span(
-        "pr_rereview",
-        repo=repo_full_name,
-        pr_number=pr_number,
-        requested_by=payload.sender.login,
-    ):
-        gh_repo = github.get_repo(repo_full_name)
-        gh_pr = gh_repo.get_pull(pr_number)
+    github = get_github_client(payload.installation.id)
+
+    with logfire.span(prefix, repo=repo, pr_number=pr_num, requester=requester):
+        gh_repo = github.get_repo(repo)
+        gh_pr = gh_repo.get_pull(pr_num)
 
         # Fetch previous reviews from the bot to include as context
         previous_reviews = []
@@ -599,12 +469,9 @@ async def handle_pr_rereview(payload: IssueCommentWebhookPayload):
                             "body": review.body,
                         }
                     )
-            logfire.info(
-                "Found previous bot reviews",
-                count=len(previous_reviews),
-            )
+            logfire.info(f"{prefix} - found {len(previous_reviews)} previous bot reviews")
         except Exception as e:
-            logfire.error("Failed to fetch previous reviews", error=str(e))
+            logfire.error(f"{prefix} - failed to fetch previous reviews: {e}")
 
         # Build PR payload for review
         pr_payload = PullRequestWebhookPayload(
@@ -625,24 +492,22 @@ async def handle_pr_rereview(payload: IssueCommentWebhookPayload):
         )
 
         # Include the comment that triggered re-review and previous reviews as context
-        rereview_context = (
-            f"Re-review requested by @{payload.sender.login}:\n{payload.comment.body}"
-        )
+        rereview_context = f"Re-review requested by @{requester}:\n{payload.comment.body}"
         if previous_reviews:
             rereview_context += "\n\nPrevious review(s) from this bot:\n"
             for prev in previous_reviews:
                 rereview_context += f"\n[{prev['state']}]: {prev['body']}\n"
 
         # Fetch open review threads for potential resolution
-        owner, repo_name = repo_full_name.split("/")
+        owner, repo_name = repo.split("/")
         all_threads = await get_review_threads(
             payload.installation.id,
             owner,
             repo_name,
-            pr_number,
+            pr_num,
         )
         open_threads = [t for t in all_threads if not t.get("isResolved", False)]
-        logfire.info("Found open review threads", count=len(open_threads))
+        logfire.info(f"{prefix} - {len(open_threads)} open threads to check")
 
         await review_pull_request(
             pr_payload,
