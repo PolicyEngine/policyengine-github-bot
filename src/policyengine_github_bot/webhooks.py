@@ -9,9 +9,15 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import ValidationError
 
 from policyengine_github_bot.config import get_settings
-from policyengine_github_bot.github_auth import get_github_client
+from policyengine_github_bot.github_auth import (
+    get_github_client,
+    get_review_threads,
+    resolve_review_thread,
+)
 from policyengine_github_bot.llm import generate_issue_response, generate_pr_review
 from policyengine_github_bot.models import (
+    GitHubPullRequest,
+    GitHubUser,
     IssueCommentWebhookPayload,
     IssueWebhookPayload,
     PullRequestWebhookPayload,
@@ -218,12 +224,16 @@ async def handle_issue_comment_event(data: dict):
         logfire.error("Invalid issue_comment webhook payload", errors=e.errors())
         return
 
+    # Check if this is a PR comment (PRs have a pull_request key in the issue)
+    is_pr = "pull_request" in data.get("issue", {})
+
     logfire.info(
         "Issue comment event received",
         action=payload.action,
         repo=payload.repository.full_name,
         issue_number=payload.issue.number,
         comment_author=payload.comment.user.login,
+        is_pr=is_pr,
     )
 
     # Only respond to new comments
@@ -255,13 +265,7 @@ async def handle_issue_comment_event(data: dict):
     # Check if we should respond
     mentioned = contains_mention(payload.comment.body)
 
-    if mentioned:
-        logfire.info(
-            "Bot mentioned in comment",
-            repo=payload.repository.full_name,
-            issue_number=payload.issue.number,
-        )
-    else:
+    if not mentioned:
         # Check if we're already in the conversation
         github = get_github_client(payload.installation.id)
         in_conversation = bot_is_in_conversation(
@@ -283,8 +287,25 @@ async def handle_issue_comment_event(data: dict):
             repo=payload.repository.full_name,
             issue_number=payload.issue.number,
         )
+    else:
+        logfire.info(
+            "Bot mentioned in comment",
+            repo=payload.repository.full_name,
+            issue_number=payload.issue.number,
+            is_pr=is_pr,
+        )
 
-    # Convert to IssueWebhookPayload format for response
+    # If this is a PR and we're mentioned, do a re-review
+    if is_pr and mentioned:
+        logfire.info(
+            "Re-review requested via PR comment",
+            repo=payload.repository.full_name,
+            pr_number=payload.issue.number,
+        )
+        await handle_pr_rereview(payload)
+        return
+
+    # Otherwise handle as a normal issue comment
     issue_payload = IssueWebhookPayload(
         action="comment",
         issue=payload.issue,
@@ -416,7 +437,11 @@ async def handle_pull_request_review_event(data: dict):
     )
 
 
-async def review_pull_request(payload: PullRequestWebhookPayload):
+async def review_pull_request(
+    payload: PullRequestWebhookPayload,
+    rereview_context: str | None = None,
+    open_threads: list[dict] | None = None,
+):
     """Generate and post a PR review."""
     if not payload.installation:
         logfire.error(
@@ -480,6 +505,8 @@ async def review_pull_request(payload: PullRequestWebhookPayload):
                 diff=diff,
                 files_changed=files_changed,
                 repo_context=claude_md,
+                rereview_context=rereview_context,
+                open_threads=open_threads,
             )
 
         # Post review as a single unified review with all inline comments
@@ -521,9 +548,104 @@ async def review_pull_request(payload: PullRequestWebhookPayload):
             else:
                 gh_pr.create_review(body=review.summary, event=event)
 
+        # Resolve threads that the LLM identified as addressed
+        if open_threads and review.threads_to_resolve:
+            with logfire.span(
+                "resolve_threads",
+                pr_number=payload.pull_request.number,
+                threads_to_resolve=review.threads_to_resolve,
+            ):
+                for idx in review.threads_to_resolve:
+                    if 0 <= idx < len(open_threads):
+                        thread_id = open_threads[idx].get("id")
+                        if thread_id:
+                            await resolve_review_thread(
+                                payload.installation.id,
+                                thread_id,
+                            )
+
         logfire.info(
             "Successfully reviewed PR",
             repo=payload.repository.full_name,
             pr_number=payload.pull_request.number,
             approval=review.approval,
+            threads_resolved=len(review.threads_to_resolve) if open_threads else 0,
+        )
+
+
+async def handle_pr_rereview(payload: IssueCommentWebhookPayload):
+    """Handle a re-review request on a PR via comment mention."""
+    github = get_github_client(payload.installation.id)
+    repo_full_name = payload.repository.full_name
+    pr_number = payload.issue.number
+
+    with logfire.span(
+        "pr_rereview",
+        repo=repo_full_name,
+        pr_number=pr_number,
+        requested_by=payload.sender.login,
+    ):
+        gh_repo = github.get_repo(repo_full_name)
+        gh_pr = gh_repo.get_pull(pr_number)
+
+        # Fetch previous reviews from the bot to include as context
+        previous_reviews = []
+        try:
+            for review in gh_pr.get_reviews():
+                if review.user.login.lower() in [u.lower() for u in BOT_USERNAMES]:
+                    previous_reviews.append(
+                        {
+                            "state": review.state,
+                            "body": review.body,
+                        }
+                    )
+            logfire.info(
+                "Found previous bot reviews",
+                count=len(previous_reviews),
+            )
+        except Exception as e:
+            logfire.error("Failed to fetch previous reviews", error=str(e))
+
+        # Build PR payload for review
+        pr_payload = PullRequestWebhookPayload(
+            action="rereview",
+            pull_request=GitHubPullRequest(
+                id=gh_pr.id,
+                number=gh_pr.number,
+                title=gh_pr.title,
+                body=gh_pr.body,
+                state=gh_pr.state,
+                user=GitHubUser(login=gh_pr.user.login, id=gh_pr.user.id),
+                head={"sha": gh_pr.head.sha, "ref": gh_pr.head.ref},
+                base={"sha": gh_pr.base.sha, "ref": gh_pr.base.ref},
+            ),
+            repository=payload.repository,
+            installation=payload.installation,
+            sender=payload.sender,
+        )
+
+        # Include the comment that triggered re-review and previous reviews as context
+        rereview_context = (
+            f"Re-review requested by @{payload.sender.login}:\n{payload.comment.body}"
+        )
+        if previous_reviews:
+            rereview_context += "\n\nPrevious review(s) from this bot:\n"
+            for prev in previous_reviews:
+                rereview_context += f"\n[{prev['state']}]: {prev['body']}\n"
+
+        # Fetch open review threads for potential resolution
+        owner, repo_name = repo_full_name.split("/")
+        all_threads = await get_review_threads(
+            payload.installation.id,
+            owner,
+            repo_name,
+            pr_number,
+        )
+        open_threads = [t for t in all_threads if not t.get("isResolved", False)]
+        logfire.info("Found open review threads", count=len(open_threads))
+
+        await review_pull_request(
+            pr_payload,
+            rereview_context=rereview_context,
+            open_threads=open_threads,
         )

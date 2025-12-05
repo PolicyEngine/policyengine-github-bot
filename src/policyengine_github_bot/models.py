@@ -129,3 +129,7 @@ class PRReviewResponse(BaseModel):
         default_factory=list,
         description="Inline comments on specific lines",
     )
+    threads_to_resolve: list[int] = Field(
+        default_factory=list,
+        description="Indices of review threads that have been addressed and should be resolved",
+    )

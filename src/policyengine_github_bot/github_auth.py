@@ -2,10 +2,14 @@
 
 import time
 
+import httpx
 import jwt
+import logfire
 from github import Auth, Github, GithubIntegration
 
 from policyengine_github_bot.config import get_settings
+
+GITHUB_GRAPHQL_URL = "https://api.github.com/graphql"
 
 
 def get_private_key() -> str:
@@ -48,3 +52,117 @@ def get_installation_id(owner: str, repo: str) -> int:
 
     installation = gi.get_repo_installation(owner, repo)
     return installation.id
+
+
+def get_installation_token(installation_id: int) -> str:
+    """Get an installation access token for API calls."""
+    settings = get_settings()
+
+    auth = Auth.AppAuth(settings.github_app_id, get_private_key())
+    gi = GithubIntegration(auth=auth)
+    installation_auth = gi.get_access_token(installation_id)
+
+    return installation_auth.token
+
+
+async def graphql_request(
+    installation_id: int,
+    query: str,
+    variables: dict | None = None,
+) -> dict:
+    """Make a GraphQL request to GitHub API."""
+    token = get_installation_token(installation_id)
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            GITHUB_GRAPHQL_URL,
+            json={"query": query, "variables": variables or {}},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def get_review_threads(
+    installation_id: int,
+    owner: str,
+    repo: str,
+    pr_number: int,
+) -> list[dict]:
+    """Get all review threads for a PR via GraphQL."""
+    query = """
+    query($owner: String!, $repo: String!, $pr_number: Int!) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $pr_number) {
+          reviewThreads(first: 100) {
+            nodes {
+              id
+              isResolved
+              comments(first: 1) {
+                nodes {
+                  author {
+                    login
+                  }
+                  body
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+
+    result = await graphql_request(
+        installation_id,
+        query,
+        {"owner": owner, "repo": repo, "pr_number": pr_number},
+    )
+
+    threads = (
+        result.get("data", {})
+        .get("repository", {})
+        .get("pullRequest", {})
+        .get("reviewThreads", {})
+        .get("nodes", [])
+    )
+
+    logfire.info("Fetched review threads", count=len(threads))
+    return threads
+
+
+async def resolve_review_thread(installation_id: int, thread_id: str) -> bool:
+    """Resolve a review thread via GraphQL."""
+    mutation = """
+    mutation($thread_id: ID!) {
+      resolveReviewThread(input: {threadId: $thread_id}) {
+        thread {
+          id
+          isResolved
+        }
+      }
+    }
+    """
+
+    try:
+        result = await graphql_request(
+            installation_id,
+            mutation,
+            {"thread_id": thread_id},
+        )
+
+        resolved = (
+            result.get("data", {})
+            .get("resolveReviewThread", {})
+            .get("thread", {})
+            .get("isResolved", False)
+        )
+
+        logfire.info("Resolved review thread", thread_id=thread_id, success=resolved)
+        return resolved
+    except Exception as e:
+        logfire.error("Failed to resolve thread", thread_id=thread_id, error=str(e))
+        return False

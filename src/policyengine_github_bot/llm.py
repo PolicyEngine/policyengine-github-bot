@@ -58,7 +58,13 @@ IMPORTANT: You MUST provide inline comments on specific lines of code.
 - Add comments for: bugs, potential issues, suggestions, questions about the code
 - Don't comment on trivial style issues
 
-For approval field, use exactly one of: APPROVE, REQUEST_CHANGES, or COMMENT"""
+For approval field:
+- APPROVE: The code is good to merge. Use this when changes are correct and complete.
+- REQUEST_CHANGES: There are issues that MUST be fixed before merging (bugs, security issues, \
+missing tests for new functionality, broken logic).
+- COMMENT: You have feedback but it's not blocking (suggestions, questions, minor improvements).
+
+When re-reviewing after changes, check if previous concerns were addressed."""
     )
 
     if repo_context:
@@ -118,6 +124,8 @@ async def generate_pr_review(
     diff: str,
     files_changed: list[dict],
     repo_context: str | None = None,
+    rereview_context: str | None = None,
+    open_threads: list[dict] | None = None,
 ) -> PRReviewResponse:
     """Generate a PR review using Claude."""
     logfire.info(
@@ -127,6 +135,8 @@ async def generate_pr_review(
         files_changed=len(files_changed),
         diff_length=len(diff),
         has_repo_context=repo_context is not None,
+        is_rereview=rereview_context is not None,
+        open_thread_count=len(open_threads) if open_threads else 0,
     )
 
     agent = get_pr_review_agent(repo_context)
@@ -149,7 +159,28 @@ Files changed:
 Diff (with line numbers from @@ headers showing new file line positions):
 ```diff
 {diff}
-```
+```"""
+
+    if rereview_context:
+        prompt += f"""
+
+This is a RE-REVIEW. Context:
+{rereview_context}
+
+Check if previous concerns have been addressed. Focus on what changed since the last review."""
+
+        if open_threads:
+            prompt += "\n\nOpen review threads from previous reviews:\n"
+            for i, thread in enumerate(open_threads):
+                first_comment = thread.get("comments", {}).get("nodes", [{}])[0]
+                author = first_comment.get("author", {}).get("login", "unknown")
+                body = first_comment.get("body", "(no body)")
+                prompt += f"\n[Thread {i}] by {author}: {body}\n"
+            prompt += """
+For each thread above that has been FULLY addressed by the current code, include its \
+index number in threads_to_resolve. Only resolve threads where the concern is clearly fixed."""
+
+    prompt += """
 
 Provide a thorough but concise review. Include inline comments on specific lines where you have \
 feedback. Use the line numbers from the RIGHT side of the diff (the + lines in the new version). \
