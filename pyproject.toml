@@ -1,0 +1,37 @@
+[project]
+name = "policyengine-github-bot"
+version = "0.1.0"
+description = "PolicyEngine's GitHub bot for auto-reviewing PRs and responding to issues"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.75.0",
+    "cryptography>=46.0.3",
+    "fastapi>=0.123.9",
+    "httpx>=0.28.1",
+    "pydantic>=2.12.5",
+    "pydantic-settings>=2.12.0",
+    "pygithub>=2.8.1",
+    "python-multipart>=0.0.20",
+    "uvicorn[standard]>=0.38.0",
+]
+
+[dependency-groups]
+dev = [
+    "rich>=14.2.0",
+    "ruff>=0.14.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/policyengine_github_bot"]
