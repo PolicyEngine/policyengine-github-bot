@@ -10,14 +10,19 @@ from pydantic import ValidationError
 
 from policyengine_github_bot.config import get_settings
 from policyengine_github_bot.github_auth import get_github_client
-from policyengine_github_bot.llm import generate_issue_response
-from policyengine_github_bot.models import IssueCommentWebhookPayload, IssueWebhookPayload
+from policyengine_github_bot.llm import generate_issue_response, generate_pr_review
+from policyengine_github_bot.models import (
+    IssueCommentWebhookPayload,
+    IssueWebhookPayload,
+    PullRequestWebhookPayload,
+)
 
 router = APIRouter()
 
 # Bot username for detecting mentions and own comments
-BOT_USERNAME = "policyengine"
-MENTION_PATTERN = re.compile(r"@policyengine\b", re.IGNORECASE)
+BOT_USERNAME = "policyengine-auto"
+BOT_USERNAMES = ["policyengine", "policyengine-auto"]
+MENTION_PATTERN = re.compile(r"@(policyengine|policyengine-auto)\b", re.IGNORECASE)
 
 
 def verify_signature(payload: bytes, signature: str, secret: str) -> bool:
@@ -135,6 +140,10 @@ async def handle_webhook(
         await handle_issue_event(data)
     elif x_github_event == "issue_comment":
         await handle_issue_comment_event(data)
+    elif x_github_event == "pull_request":
+        await handle_pull_request_event(data)
+    elif x_github_event == "pull_request_review":
+        await handle_pull_request_review_event(data)
     elif x_github_event == "ping":
         logfire.info("Ping received", zen=data.get("zen", ""))
         return {"status": "pong"}
@@ -344,4 +353,173 @@ async def respond_to_issue(
             "Successfully responded to issue",
             repo=payload.repository.full_name,
             issue_number=payload.issue.number,
+        )
+
+
+async def handle_pull_request_event(data: dict):
+    """Handle pull request events - review if @policyengine-auto is mentioned or requested."""
+    try:
+        payload = PullRequestWebhookPayload.model_validate(data)
+    except ValidationError as e:
+        logfire.error("Invalid pull_request webhook payload", errors=e.errors())
+        return
+
+    logfire.info(
+        "Pull request event received",
+        action=payload.action,
+        repo=payload.repository.full_name,
+        pr_number=payload.pull_request.number,
+        pr_title=payload.pull_request.title,
+        sender=payload.sender.login,
+    )
+
+    # Check if this is a review request for our bot
+    if payload.action == "review_requested":
+        requested_reviewer = data.get("requested_reviewer", {})
+        reviewer_login = requested_reviewer.get("login", "").lower()
+
+        if reviewer_login in [u.lower() for u in BOT_USERNAMES]:
+            logfire.info(
+                "Review requested from bot",
+                repo=payload.repository.full_name,
+                pr_number=payload.pull_request.number,
+                requested_reviewer=reviewer_login,
+            )
+            await review_pull_request(payload)
+            return
+
+    # Check if mentioned in PR body on open
+    if payload.action == "opened":
+        if contains_mention(payload.pull_request.body):
+            logfire.info(
+                "Bot mentioned in new PR",
+                repo=payload.repository.full_name,
+                pr_number=payload.pull_request.number,
+            )
+            await review_pull_request(payload)
+            return
+
+    logfire.info(
+        "Ignoring pull request event",
+        action=payload.action,
+        reason="not a review request for bot or mention",
+    )
+
+
+async def handle_pull_request_review_event(data: dict):
+    """Handle pull request review events - currently just logging."""
+    logfire.info(
+        "Pull request review event received",
+        action=data.get("action"),
+        repo=data.get("repository", {}).get("full_name"),
+        pr_number=data.get("pull_request", {}).get("number"),
+    )
+
+
+async def review_pull_request(payload: PullRequestWebhookPayload):
+    """Generate and post a PR review."""
+    if not payload.installation:
+        logfire.error(
+            "No installation ID in webhook payload",
+            repo=payload.repository.full_name,
+            pr_number=payload.pull_request.number,
+        )
+        return
+
+    with logfire.span(
+        "review_pull_request",
+        repo=payload.repository.full_name,
+        pr_number=payload.pull_request.number,
+        pr_title=payload.pull_request.title,
+    ):
+        logfire.info("Authenticating with GitHub", installation_id=payload.installation.id)
+        github = get_github_client(payload.installation.id)
+
+        # Fetch CLAUDE.md for context
+        with logfire.span("fetch_claude_md", repo=payload.repository.full_name):
+            claude_md = fetch_claude_md(github, payload.repository.full_name)
+
+        # Get PR diff and files
+        with logfire.span("fetch_pr_details", pr_number=payload.pull_request.number):
+            gh_repo = github.get_repo(payload.repository.full_name)
+            gh_pr = gh_repo.get_pull(payload.pull_request.number)
+
+            # Get the diff
+            diff = ""
+            try:
+                import httpx
+
+                diff_url = gh_pr.diff_url
+                response = httpx.get(diff_url)
+                diff = response.text
+                logfire.info("Fetched PR diff", diff_length=len(diff))
+            except Exception as e:
+                logfire.error("Failed to fetch PR diff", error=str(e))
+
+            # Get files changed
+            files_changed = []
+            for f in gh_pr.get_files():
+                files_changed.append(
+                    {
+                        "filename": f.filename,
+                        "additions": f.additions,
+                        "deletions": f.deletions,
+                        "status": f.status,
+                    }
+                )
+            logfire.info("Fetched PR files", file_count=len(files_changed))
+
+        # Generate review
+        with logfire.span("generate_review", pr_number=payload.pull_request.number):
+            review = await generate_pr_review(
+                pr=payload.pull_request,
+                diff=diff,
+                files_changed=files_changed,
+                repo_context=claude_md,
+            )
+
+        # Post review as a single unified review with all inline comments
+        with logfire.span("post_review", pr_number=payload.pull_request.number):
+            logfire.info(
+                "Posting PR review",
+                repo=payload.repository.full_name,
+                pr_number=payload.pull_request.number,
+                approval=review.approval,
+                inline_comment_count=len(review.comments),
+            )
+
+            # Map approval to GitHub event type
+            event_map = {
+                "APPROVE": "APPROVE",
+                "REQUEST_CHANGES": "REQUEST_CHANGES",
+                "COMMENT": "COMMENT",
+            }
+            event = event_map.get(review.approval.upper(), "COMMENT")
+
+            # Build inline comments for the review
+            review_comments = []
+            for comment in review.comments:
+                review_comments.append(
+                    {
+                        "path": comment.path,
+                        "line": comment.line,
+                        "body": comment.body,
+                    }
+                )
+
+            # Create a single review with all comments
+            if review_comments:
+                gh_pr.create_review(
+                    body=review.summary,
+                    event=event,
+                    comments=review_comments,
+                )
+            else:
+                gh_pr.create_review(body=review.summary, event=event)
+
+        logfire.info(
+            "Successfully reviewed PR",
+            repo=payload.repository.full_name,
+            pr_number=payload.pull_request.number,
+            approval=review.approval,
         )
