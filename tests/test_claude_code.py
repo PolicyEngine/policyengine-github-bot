@@ -8,6 +8,7 @@ import pytest
 
 from policyengine_github_bot.claude_code import (
     TaskResult,
+    capture_learnings,
     execute_task,
     gather_review_context,
     run_claude_code,
@@ -314,3 +315,72 @@ class TestExecuteTask:
             git_calls = [call[0][0] for call in mock_subprocess.call_args_list]
             assert any("user.email" in str(call) for call in git_calls)
             assert any("user.name" in str(call) for call in git_calls)
+
+
+class TestCaptureLearnings:
+    async def test_capture_learnings_files_pr(self):
+        """Test that learnings PR is filed when Claude creates one."""
+        with (
+            patch("policyengine_github_bot.claude_code.clone_repo") as mock_clone,
+            patch("policyengine_github_bot.claude_code.run_claude_code") as mock_run,
+            patch("policyengine_github_bot.claude_code.get_temp_repo_dir") as mock_temp,
+            patch("policyengine_github_bot.claude_code.subprocess.run") as mock_subprocess,
+        ):
+            mock_temp.return_value.__enter__ = MagicMock(return_value="/tmp/test")
+            mock_temp.return_value.__exit__ = MagicMock(return_value=False)
+            mock_clone.return_value = Path("/tmp/test/repo")
+            mock_subprocess.return_value = MagicMock(returncode=0)
+            mock_run.return_value = "Filed PR: https://github.com/PolicyEngine/policyengine-claude/pull/42"
+
+            result = await capture_learnings(
+                task_context="Fix a bug in the tax calculator",
+                task_output="Fixed the bug by updating the formula",
+                source_repo="https://github.com/PolicyEngine/policyengine-us",
+                token="ghp_token",
+            )
+
+            assert result == "https://github.com/PolicyEngine/policyengine-claude/pull/42"
+            mock_clone.assert_called_once()
+            # Should clone the plugin repo
+            assert "policyengine-claude" in mock_clone.call_args[1]["repo_url"]
+
+    async def test_capture_learnings_no_pr(self):
+        """Test that no PR URL is returned when nothing to capture."""
+        with (
+            patch("policyengine_github_bot.claude_code.clone_repo") as mock_clone,
+            patch("policyengine_github_bot.claude_code.run_claude_code") as mock_run,
+            patch("policyengine_github_bot.claude_code.get_temp_repo_dir") as mock_temp,
+            patch("policyengine_github_bot.claude_code.subprocess.run") as mock_subprocess,
+        ):
+            mock_temp.return_value.__enter__ = MagicMock(return_value="/tmp/test")
+            mock_temp.return_value.__exit__ = MagicMock(return_value=False)
+            mock_clone.return_value = Path("/tmp/test/repo")
+            mock_subprocess.return_value = MagicMock(returncode=0)
+            mock_run.return_value = "No learnings to capture"
+
+            result = await capture_learnings(
+                task_context="Simple question",
+                task_output="Answered the question",
+                source_repo="https://github.com/PolicyEngine/policyengine-us",
+            )
+
+            assert result is None
+
+    async def test_capture_learnings_handles_failure(self):
+        """Test that failures are handled gracefully."""
+        with (
+            patch("policyengine_github_bot.claude_code.clone_repo") as mock_clone,
+            patch("policyengine_github_bot.claude_code.get_temp_repo_dir") as mock_temp,
+        ):
+            mock_temp.return_value.__enter__ = MagicMock(return_value="/tmp/test")
+            mock_temp.return_value.__exit__ = MagicMock(return_value=False)
+            mock_clone.side_effect = RuntimeError("Clone failed")
+
+            result = await capture_learnings(
+                task_context="Some task",
+                task_output="Some output",
+                source_repo="https://github.com/PolicyEngine/policyengine-us",
+            )
+
+            # Should return None on failure, not raise
+            assert result is None

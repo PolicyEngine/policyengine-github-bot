@@ -9,6 +9,8 @@ import logfire
 
 from policyengine_github_bot.repo import clone_repo, get_temp_repo_dir
 
+PLUGIN_REPO_URL = "https://github.com/PolicyEngine/policyengine-claude"
+
 
 @dataclass
 class TaskResult:
@@ -135,6 +137,94 @@ def run_claude_code_streaming(
         raise RuntimeError(f"Claude Code exited with code {proc.returncode}")
 
     logfire.info("[claude-code] Streaming complete")
+
+
+async def capture_learnings(
+    task_context: str,
+    task_output: str,
+    source_repo: str,
+    token: str | None = None,
+    timeout: int = 300,
+) -> str | None:
+    """Reflect on a completed task and file a PR to the plugin repo if there are learnings.
+
+    Args:
+        task_context: Description of the task that was performed
+        task_output: Output from the task execution
+        source_repo: The repo where the task was performed
+        token: GitHub token for auth
+        timeout: Timeout in seconds
+
+    Returns:
+        PR URL if one was created, None otherwise
+    """
+    import asyncio
+    import os
+    import re
+
+    prompt = f"""You just helped with a task in {source_repo}:
+
+Task: {task_context[:500]}
+
+You should consider whether there's anything you learned that would help future Claude Code sessions working on PolicyEngine repositories. This could include:
+- Patterns or conventions specific to this repo
+- Common gotchas or edge cases
+- Useful context about how components interact
+- Testing or debugging tips
+
+If there's something worth adding to the PolicyEngine Claude plugin (policyengine-claude), file a PR. The plugin contains skills, agents, and documentation that help Claude Code work effectively on PolicyEngine repos.
+
+If there's nothing significant to add, just say "No learnings to capture" and stop.
+
+If filing a PR:
+- Create branch 'bot/learnings-{source_repo.split("/")[-1]}'
+- Keep changes minimal and focused
+- Commit and push, then create PR with `gh pr create`
+
+Be selective - only file a PR if it would genuinely help future sessions."""
+
+    with logfire.span("[claude-code] Capturing learnings", source_repo=source_repo):
+        with get_temp_repo_dir() as tmpdir:
+            try:
+                repo_path = await clone_repo(
+                    repo_url=PLUGIN_REPO_URL,
+                    target_dir=tmpdir,
+                    ref="main",
+                    token=token,
+                )
+
+                subprocess.run(
+                    ["git", "config", "user.email", "bot@policyengine.org"],
+                    cwd=repo_path,
+                    check=True,
+                )
+                subprocess.run(
+                    ["git", "config", "user.name", "policyengine-bot"],
+                    cwd=repo_path,
+                    check=True,
+                )
+
+                env = os.environ.copy()
+                if token:
+                    env["GH_TOKEN"] = token
+
+                output = await asyncio.to_thread(
+                    run_claude_code, prompt, repo_path, timeout, env
+                )
+
+                # Check if a PR was created
+                pr_match = re.search(r"https://github\.com/[^\s]+/pull/\d+", output)
+                if pr_match:
+                    pr_url = pr_match.group(0)
+                    logfire.info("[claude-code] Filed learnings PR", pr_url=pr_url)
+                    return pr_url
+
+                logfire.info("[claude-code] No learnings to capture")
+                return None
+
+            except Exception as e:
+                logfire.warning(f"[claude-code] Failed to capture learnings: {e}")
+                return None
 
 
 async def gather_review_context(
@@ -266,6 +356,16 @@ Your response will be posted as a GitHub comment. Write like a human - be direct
                     "[claude-code] Task completed",
                     pr_url=pr_url,
                     output_length=len(output),
+                )
+
+                # Capture learnings in background (don't block the response)
+                asyncio.create_task(
+                    capture_learnings(
+                        task_context=task,
+                        task_output=output,
+                        source_repo=repo_url,
+                        token=token,
+                    )
                 )
 
                 return TaskResult(output=output, success=True, pr_url=pr_url)
