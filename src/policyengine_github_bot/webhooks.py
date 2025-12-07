@@ -228,6 +228,11 @@ async def handle_issue_comment_event(data: dict):
 
     # Check if we should respond
     mentioned = contains_mention(payload.comment.body)
+    logfire.info(
+        f"{prefix} - checking mention",
+        body_preview=payload.comment.body[:100] if payload.comment.body else None,
+        mentioned=mentioned,
+    )
 
     if not mentioned:
         # Check if we're already in the conversation
