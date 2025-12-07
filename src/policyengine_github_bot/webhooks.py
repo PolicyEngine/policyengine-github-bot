@@ -8,7 +8,7 @@ import logfire
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import ValidationError
 
-from policyengine_github_bot.claude_code import execute_task, gather_review_context
+from policyengine_github_bot.claude_code import execute_task
 from policyengine_github_bot.config import get_settings
 from policyengine_github_bot.github_auth import (
     get_github_client,
@@ -20,7 +20,6 @@ from policyengine_github_bot.github_auth import (
 from policyengine_github_bot.llm import (
     generate_issue_response,
     generate_pr_rereview,
-    generate_pr_review,
 )
 from policyengine_github_bot.models import (
     GitHubPullRequest,
@@ -315,12 +314,13 @@ async def handle_claude_code_request(
     issue_num = payload.issue.number
     prefix = f"[claude-code] {repo}#{issue_num}"
 
-    # Get default branch and token
-    default_branch = gh_repo.default_branch
-    token = get_installation_token(payload.installation.id)
+    with logfire.span(prefix, repo=repo, issue_number=issue_num):
+        # Get default branch and token
+        default_branch = gh_repo.default_branch
+        token = get_installation_token(payload.installation.id)
 
-    # Build context for Claude Code
-    task = f"""You are responding to a GitHub issue.
+        # Build context for Claude Code
+        task = f"""You are responding to a GitHub issue.
 
 Repository: {repo}
 Issue #{issue_num}: {payload.issue.title}
@@ -339,27 +339,27 @@ Instructions:
 - Be concise and helpful in your response
 - Your final output will be posted as a comment on the issue"""
 
-    logfire.info(f"{prefix} - executing via Claude Code...")
+        logfire.info(f"{prefix} - executing via Claude Code...")
 
-    result = await execute_task(
-        repo_url=f"https://github.com/{repo}",
-        base_ref=default_branch,
-        task=task,
-        issue_number=issue_num,
-        token=token,
-    )
+        result = await execute_task(
+            repo_url=f"https://github.com/{repo}",
+            base_ref=default_branch,
+            task=task,
+            issue_number=issue_num,
+            token=token,
+        )
 
-    # Post result
-    if result.success:
-        # Truncate if very long
-        output = result.output
-        if len(output) > 4000:
-            output = output[:4000] + "\n\n...(truncated)"
-        gh_issue.create_comment(output)
-    else:
-        gh_issue.create_comment(f"I ran into an issue:\n\n```\n{result.output[:1000]}\n```")
+        # Post result
+        if result.success:
+            # Truncate if very long
+            output = result.output
+            if len(output) > 4000:
+                output = output[:4000] + "\n\n...(truncated)"
+            gh_issue.create_comment(output)
+        else:
+            gh_issue.create_comment(f"I ran into an issue:\n\n```\n{result.output[:1000]}\n```")
 
-    logfire.info(f"{prefix} - complete (success={result.success}, pr={result.pr_url})")
+        logfire.info(f"{prefix} - complete (success={result.success}, pr={result.pr_url})")
 
 
 async def handle_pull_request_event(data: dict):
@@ -404,11 +404,8 @@ async def handle_pull_request_review_event(data: dict):
     logfire.info(f"[pr_review] {repo}#{pr_num} @{reviewer} - {action}")
 
 
-async def review_pull_request(
-    payload: PullRequestWebhookPayload,
-    use_claude_code: bool = True,
-):
-    """Generate and post a PR review."""
+async def review_pull_request(payload: PullRequestWebhookPayload):
+    """Review a PR using Claude Code."""
     repo = payload.repository.full_name
     pr_num = payload.pull_request.number
     prefix = f"[review] {repo}#{pr_num}"
@@ -418,84 +415,57 @@ async def review_pull_request(
         return
 
     with logfire.span(prefix, repo=repo, pr_number=pr_num):
-        github = get_github_client(payload.installation.id)
+        token = get_installation_token(payload.installation.id)
 
-        # Fetch CLAUDE.md for context
-        claude_md = fetch_claude_md(github, repo)
+        # Build review task for Claude Code
+        base_ref = payload.pull_request.base["ref"]
+        task = f"""You are reviewing pull request #{pr_num} in {repo}.
 
-        # Get PR diff and files
-        logfire.info(f"{prefix} - fetching diff and files...")
-        gh_repo = github.get_repo(repo)
-        gh_pr = gh_repo.get_pull(pr_num)
+PR title: {payload.pull_request.title}
 
-        diff, files_changed = get_pr_diff_and_files(gh_pr, prefix)
+PR description:
+{payload.pull_request.body or "(no description)"}
 
-        logfire.info(f"{prefix} - {len(files_changed)} files, {len(diff)} chars diff")
+Instructions:
+1. Review the changes (use `git diff {base_ref}...HEAD`)
+2. Understand what the PR is trying to do and whether it achieves that
+3. Look for bugs, edge cases, security issues, and logic errors
+4. Check test coverage if relevant
 
-        # Gather enhanced context via Claude Code (optional)
-        codebase_context = None
-        if use_claude_code:
-            try:
-                logfire.info(f"{prefix} - gathering codebase context via Claude Code...")
-                token = get_installation_token(payload.installation.id)
-                codebase_context = await gather_review_context(
-                    repo_url=f"https://github.com/{repo}",
-                    ref=payload.pull_request.head["ref"],
-                    files_changed=[f["filename"] for f in files_changed],
-                    pr_title=payload.pull_request.title,
-                    pr_body=payload.pull_request.body,
-                    token=token,
-                )
-                logfire.info(f"{prefix} - got {len(codebase_context)} chars context")
-            except Exception as e:
-                logfire.warn(f"{prefix} - Claude Code failed, continuing without: {e}")
+Review guidelines:
+- Only leave inline comments on lines with actual issues (bugs, security, logic errors)
+- Do NOT comment on things that are fine - mention these briefly in the summary
+- If you find issues you can fix, fix them directly (commit to the PR branch)
+- Use `gh` CLI to post your review
 
-        # Combine contexts
-        repo_context = claude_md or ""
-        if codebase_context:
-            repo_context += f"\n\n## Codebase context (from exploration)\n\n{codebase_context}"
-        repo_context = repo_context.strip() or None
+When posting the review:
+- `gh pr review {pr_num} --approve -b "summary"` if good
+- `gh pr review {pr_num} --request-changes -b "summary"` if blocking issues
+- `gh pr review {pr_num} --comment -b "summary"` for non-blocking feedback
 
-        # Generate review
-        logfire.info(f"{prefix} - generating review...")
-        review = await generate_pr_review(
-            pr=payload.pull_request,
-            diff=diff,
-            files_changed=files_changed,
-            repo_context=repo_context,
+Output a brief summary of your review."""
+
+        logfire.info(f"{prefix} - reviewing via Claude Code...")
+
+        result = await execute_task(
+            repo_url=f"https://github.com/{repo}",
+            base_ref=payload.pull_request.head["ref"],  # Check out the PR branch
+            task=task,
+            issue_number=pr_num,
+            token=token,
         )
 
-        # Map approval to GitHub event type
-        event_map = {
-            "APPROVE": "APPROVE",
-            "REQUEST_CHANGES": "REQUEST_CHANGES",
-            "COMMENT": "COMMENT",
-        }
-        event = event_map.get(review.approval.upper(), "COMMENT")
-
-        # Build inline comments for the review
-        review_comments = []
-        for comment in review.comments:
-            review_comments.append(
-                {
-                    "path": comment.path,
-                    "line": comment.line,
-                    "body": comment.body,
-                }
+        if not result.success:
+            # If Claude Code failed, post a comment explaining
+            github = get_github_client(payload.installation.id)
+            gh_repo = github.get_repo(repo)
+            gh_pr = gh_repo.get_pull(pr_num)
+            error_msg = result.output[:1000]
+            gh_pr.create_issue_comment(
+                f"I tried to review this PR but ran into an issue:\n\n```\n{error_msg}\n```"
             )
 
-        # Create a single review with all comments
-        logfire.info(f"{prefix} - posting {event} with {len(review_comments)} inline comments")
-        if review_comments:
-            gh_pr.create_review(
-                body=review.summary,
-                event=event,
-                comments=review_comments,
-            )
-        else:
-            gh_pr.create_review(body=review.summary, event=event)
-
-        logfire.info(f"{prefix} - done ({event})")
+        logfire.info(f"{prefix} - complete (success={result.success})")
 
 
 def get_pr_diff_and_files(gh_pr, prefix: str) -> tuple[str, list[dict]]:

@@ -205,14 +205,14 @@ Be concise. Your output will be posted as a GitHub comment."""
                 token=token,
             )
 
-            # Configure git for commits
+            # Configure git for commits (author info)
             subprocess.run(
                 ["git", "config", "user.email", "bot@policyengine.org"],
                 cwd=repo_path,
                 check=True,
             )
             subprocess.run(
-                ["git", "config", "user.name", "PolicyEngine Bot"],
+                ["git", "config", "user.name", "policyengine-bot"],
                 cwd=repo_path,
                 check=True,
             )
