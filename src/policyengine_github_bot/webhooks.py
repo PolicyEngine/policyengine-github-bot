@@ -329,10 +329,11 @@ async def handle_claude_code_request(
         except Exception as e:
             logfire.warn(f"{prefix} - failed to add label: {e}")
 
-        # Post initial "working on it" comment that we'll update
+        # Post initial "working on it" comment - Claude Code will update this
         progress_comment = gh_issue.create_comment(
-            "⚙️ Working on this... I'll update this comment when I'm done."
+            "⚙️ Working on this..."
         )
+        comment_id = progress_comment.id
 
         try:
             # Get default branch and token
@@ -351,13 +352,20 @@ Issue description:
 User request:
 {request_text}
 
+Progress updates:
+- There's a comment (ID: {comment_id}) that says "⚙️ Working on this..."
+- Update this comment as you work to keep the user informed of progress
+- Use: `gh api repos/{repo}/issues/comments/{comment_id} -X PATCH -f body="your update"`
+- Update when: starting a major step, finding something important, making progress
+- Keep updates concise - just a line or two about what you're doing
+- Your final update should be your complete response (not a progress update)
+
 Instructions:
 - Read the codebase to understand context if needed
 - Answer questions, fix bugs, implement features, or do whatever is requested
 - If you need to make code changes, create a branch, commit, and open a PR
 - Use `gh` CLI for GitHub operations (PRs, issues, etc.)
-- Be concise and helpful in your response
-- Your final output will replace the progress comment on the issue"""
+- Be concise and helpful in your final response"""
 
             logfire.info(f"{prefix} - executing via Claude Code...")
 
@@ -369,13 +377,8 @@ Instructions:
                 token=token,
             )
 
-            # Update the progress comment with the result
-            if result.success:
-                output = result.output
-                if len(output) > 4000:
-                    output = output[:4000] + "\n\n...(truncated)"
-                progress_comment.edit(output)
-            else:
+            # If Claude Code failed, update the comment with error
+            if not result.success:
                 progress_comment.edit(f"I ran into an issue:\n\n```\n{result.output[:1000]}\n```")
 
             logfire.info(f"{prefix} - complete (success={result.success}, pr={result.pr_url})")
@@ -456,10 +459,11 @@ async def review_pull_request(payload: PullRequestWebhookPayload):
         except Exception as e:
             logfire.warn(f"{prefix} - failed to add label: {e}")
 
-        # Post initial progress comment
+        # Post initial progress comment - Claude Code will update this
         progress_comment = gh_pr.create_issue_comment(
-            "⚙️ Reviewing this PR... I'll post my review when I'm done."
+            "⚙️ Reviewing this PR..."
         )
+        comment_id = progress_comment.id
 
         try:
             token = get_installation_token(payload.installation.id)
@@ -472,6 +476,13 @@ PR title: {payload.pull_request.title}
 
 PR description:
 {payload.pull_request.body or "(no description)"}
+
+Progress updates:
+- There's a comment (ID: {comment_id}) that says "⚙️ Reviewing this PR..."
+- Update this comment as you work to keep the user informed of progress
+- Use: `gh api repos/{repo}/issues/comments/{comment_id} -X PATCH -f body="your update"`
+- Update when: starting to read files, finding issues, making fixes
+- Keep updates concise - just a line or two about what you're doing
 
 Instructions:
 1. Review the changes (use `git diff {base_ref}...HEAD`)
@@ -490,7 +501,8 @@ When posting the review:
 - `gh pr review {pr_num} --request-changes -b "summary"` if blocking issues
 - `gh pr review {pr_num} --comment -b "summary"` for non-blocking feedback
 
-Output a brief summary of your review."""
+After posting your review, delete the progress comment:
+`gh api repos/{repo}/issues/comments/{comment_id} -X DELETE`"""
 
             logfire.info(f"{prefix} - reviewing via Claude Code...")
 
@@ -502,10 +514,7 @@ Output a brief summary of your review."""
                 token=token,
             )
 
-            if result.success:
-                # Delete the progress comment since review was posted via gh CLI
-                progress_comment.delete()
-            else:
+            if not result.success:
                 # Update progress comment with error
                 progress_comment.edit(
                     f"I tried to review this PR but ran into an issue:\n\n```\n{result.output[:1000]}\n```"
