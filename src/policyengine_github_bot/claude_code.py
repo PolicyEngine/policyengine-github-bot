@@ -26,6 +26,7 @@ def run_claude_code(
     workdir: Path,
     timeout: int = 300,
     env: dict | None = None,
+    span_name: str | None = None,
 ) -> str:
     """Run Claude Code CLI in a directory, stream output to logfire, and return result.
 
@@ -34,6 +35,7 @@ def run_claude_code(
         workdir: Working directory for Claude Code to operate in
         timeout: Timeout in seconds (default 5 minutes)
         env: Optional environment variables (e.g. for GH_TOKEN)
+        span_name: Optional span name for logfire (creates its own span context)
 
     Returns:
         The output from Claude Code
@@ -41,64 +43,67 @@ def run_claude_code(
     import select
     import time
 
-    logfire.info(f"[claude-code] Running in {workdir}")
+    # Create a fresh span context for this synchronous operation
+    # This ensures the span stays open for the duration of the Claude Code run
+    with logfire.span(span_name or "[claude-code] Running", workdir=str(workdir)):
+        logfire.info(f"[claude-code] Started in {workdir}")
 
-    proc = subprocess.Popen(
-        [
-            "claude",
-            "-p",
-            prompt,
-            "--output-format",
-            "text",
-            "--allowedTools",
-            "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch",
-        ],
-        cwd=workdir,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        env=env,
-    )
+        proc = subprocess.Popen(
+            [
+                "claude",
+                "-p",
+                prompt,
+                "--output-format",
+                "text",
+                "--allowedTools",
+                "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch",
+            ],
+            cwd=workdir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=env,
+        )
 
-    output_lines = []
-    start_time = time.time()
+        output_lines = []
+        start_time = time.time()
 
-    try:
-        while True:
-            # Check timeout
-            if time.time() - start_time > timeout:
-                proc.kill()
-                raise TimeoutError(f"Claude Code timed out after {timeout}s")
+        try:
+            while True:
+                # Check timeout
+                if time.time() - start_time > timeout:
+                    proc.kill()
+                    raise TimeoutError(f"Claude Code timed out after {timeout}s")
 
-            # Check if process has finished
-            retcode = proc.poll()
-            if retcode is not None:
-                # Process finished, read any remaining output
-                for line in proc.stdout:
-                    output_lines.append(line)
-                    logfire.info("[claude-code] output", line=line.rstrip())
-                break
+                # Check if process has finished
+                retcode = proc.poll()
+                if retcode is not None:
+                    # Process finished, read any remaining output
+                    for line in proc.stdout:
+                        output_lines.append(line)
+                        logfire.info("[claude-code] output", line=line.rstrip())
+                    break
 
-            # Try to read a line (non-blocking on unix via select)
-            ready, _, _ = select.select([proc.stdout], [], [], 0.1)
-            if ready:
-                line = proc.stdout.readline()
-                if line:
-                    output_lines.append(line)
-                    logfire.info("[claude-code] output", line=line.rstrip())
+                # Try to read a line (non-blocking on unix via select)
+                ready, _, _ = select.select([proc.stdout], [], [], 0.1)
+                if ready:
+                    line = proc.stdout.readline()
+                    if line:
+                        output_lines.append(line)
+                        logfire.info("[claude-code] output", line=line.rstrip())
 
-    except Exception as e:
-        proc.kill()
-        raise e
+        except Exception as e:
+            proc.kill()
+            raise e
 
-    if proc.returncode != 0:
+        if proc.returncode != 0:
+            output = "".join(output_lines)
+            logfire.error(f"[claude-code] Failed with code {proc.returncode}")
+            raise RuntimeError(f"Claude Code failed (exit {proc.returncode}): {output[-500:]}")
+
         output = "".join(output_lines)
-        logfire.error(f"[claude-code] Failed with code {proc.returncode}")
-        raise RuntimeError(f"Claude Code failed (exit {proc.returncode}): {output[-500:]}")
-
-    output = "".join(output_lines)
-    logfire.info(f"[claude-code] Complete ({len(output)} chars)")
-    return output
+        logfire.info(f"[claude-code] Complete ({len(output)} chars)")
+        return output
 
 
 def run_claude_code_streaming(
@@ -310,66 +315,69 @@ If making changes: branch 'bot/{branch_suffix}', commit, push, create PR with `g
 
 Your response will be posted as a GitHub comment. Write like a human - be direct, no unnecessary headers or formatting. Just say what you did or found."""
 
-    with logfire.span(
-        "[claude-code] Executing task",
-        repo_url=repo_url,
-        issue_number=issue_number,
-        timeout=timeout,
-    ):
-        with get_temp_repo_dir() as tmpdir:
-            try:
-                repo_path = await clone_repo(
-                    repo_url=repo_url,
-                    target_dir=tmpdir,
-                    ref=base_ref,
+    # Extract repo name for span
+    repo_name = repo_url.split("/")[-1] if "/" in repo_url else repo_url
+    span_name = f"[claude-code] {repo_name}#{issue_number}" if issue_number else f"[claude-code] {repo_name}"
+
+    logfire.info(f"{span_name} - starting task", repo_url=repo_url, timeout=timeout)
+
+    with get_temp_repo_dir() as tmpdir:
+        try:
+            repo_path = await clone_repo(
+                repo_url=repo_url,
+                target_dir=tmpdir,
+                ref=base_ref,
+                token=token,
+            )
+
+            # Configure git for commits (author info)
+            subprocess.run(
+                ["git", "config", "user.email", "bot@policyengine.org"],
+                cwd=repo_path,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "policyengine-bot"],
+                cwd=repo_path,
+                check=True,
+            )
+
+            # Set up environment with GitHub token for gh CLI
+            env = os.environ.copy()
+            if token:
+                env["GH_TOKEN"] = token
+
+            import asyncio
+
+            # Run Claude Code in thread with its own span context
+            output = await asyncio.to_thread(
+                run_claude_code, prompt, repo_path, timeout, env, span_name
+            )
+
+            # Try to extract PR URL from output
+            pr_url = None
+            pr_match = re.search(r"https://github\.com/[^\s]+/pull/\d+", output)
+            if pr_match:
+                pr_url = pr_match.group(0)
+
+            logfire.info(
+                f"{span_name} - completed",
+                pr_url=pr_url,
+                output_length=len(output),
+            )
+
+            # Capture learnings in background (don't block the response)
+            asyncio.create_task(
+                capture_learnings(
+                    task_context=task,
+                    task_output=output,
+                    source_repo=repo_url,
                     token=token,
                 )
+            )
 
-                # Configure git for commits (author info)
-                subprocess.run(
-                    ["git", "config", "user.email", "bot@policyengine.org"],
-                    cwd=repo_path,
-                    check=True,
-                )
-                subprocess.run(
-                    ["git", "config", "user.name", "policyengine-bot"],
-                    cwd=repo_path,
-                    check=True,
-                )
+            return TaskResult(output=output, success=True, pr_url=pr_url)
 
-                # Set up environment with GitHub token for gh CLI
-                env = os.environ.copy()
-                if token:
-                    env["GH_TOKEN"] = token
-
-                import asyncio
-
-                output = await asyncio.to_thread(run_claude_code, prompt, repo_path, timeout, env)
-
-                # Try to extract PR URL from output
-                pr_url = None
-                pr_match = re.search(r"https://github\.com/[^\s]+/pull/\d+", output)
-                if pr_match:
-                    pr_url = pr_match.group(0)
-
-                logfire.info(
-                    "[claude-code] Task completed",
-                    pr_url=pr_url,
-                    output_length=len(output),
-                )
-
-                # Capture learnings in background (don't block the response)
-                asyncio.create_task(
-                    capture_learnings(
-                        task_context=task,
-                        task_output=output,
-                        source_repo=repo_url,
-                        token=token,
-                    )
-                )
-
-                return TaskResult(output=output, success=True, pr_url=pr_url)
-
-            except Exception as e:
-                logfire.error(f"[claude-code] Task failed: {e}")
-                return TaskResult(output=str(e), success=False)
+        except Exception as e:
+            logfire.error(f"{span_name} - failed: {e}")
+            return TaskResult(output=str(e), success=False)

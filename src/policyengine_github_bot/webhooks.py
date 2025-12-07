@@ -329,6 +329,11 @@ async def handle_claude_code_request(
         except Exception as e:
             logfire.warn(f"{prefix} - failed to add label: {e}")
 
+        # Post initial "working on it" comment that we'll update
+        progress_comment = gh_issue.create_comment(
+            "⚙️ Working on this... I'll update this comment when I'm done."
+        )
+
         try:
             # Get default branch and token
             default_branch = gh_repo.default_branch
@@ -352,7 +357,7 @@ Instructions:
 - If you need to make code changes, create a branch, commit, and open a PR
 - Use `gh` CLI for GitHub operations (PRs, issues, etc.)
 - Be concise and helpful in your response
-- Your final output will be posted as a comment on the issue"""
+- Your final output will replace the progress comment on the issue"""
 
             logfire.info(f"{prefix} - executing via Claude Code...")
 
@@ -364,17 +369,21 @@ Instructions:
                 token=token,
             )
 
-            # Post result
+            # Update the progress comment with the result
             if result.success:
-                # Truncate if very long
                 output = result.output
                 if len(output) > 4000:
                     output = output[:4000] + "\n\n...(truncated)"
-                gh_issue.create_comment(output)
+                progress_comment.edit(output)
             else:
-                gh_issue.create_comment(f"I ran into an issue:\n\n```\n{result.output[:1000]}\n```")
+                progress_comment.edit(f"I ran into an issue:\n\n```\n{result.output[:1000]}\n```")
 
             logfire.info(f"{prefix} - complete (success={result.success}, pr={result.pr_url})")
+
+        except Exception as e:
+            # Update progress comment with error
+            progress_comment.edit(f"I ran into an issue:\n\n```\n{e}\n```")
+            logfire.error(f"{prefix} - error: {e}")
 
         finally:
             # Remove engineering label when done
@@ -447,6 +456,11 @@ async def review_pull_request(payload: PullRequestWebhookPayload):
         except Exception as e:
             logfire.warn(f"{prefix} - failed to add label: {e}")
 
+        # Post initial progress comment
+        progress_comment = gh_pr.create_issue_comment(
+            "⚙️ Reviewing this PR... I'll post my review when I'm done."
+        )
+
         try:
             token = get_installation_token(payload.installation.id)
 
@@ -488,11 +502,13 @@ Output a brief summary of your review."""
                 token=token,
             )
 
-            if not result.success:
-                # If Claude Code failed, post a comment explaining
-                error_msg = result.output[:1000]
-                gh_pr.create_issue_comment(
-                    f"I tried to review this PR but ran into an issue:\n\n```\n{error_msg}\n```"
+            if result.success:
+                # Delete the progress comment since review was posted via gh CLI
+                progress_comment.delete()
+            else:
+                # Update progress comment with error
+                progress_comment.edit(
+                    f"I tried to review this PR but ran into an issue:\n\n```\n{result.output[:1000]}\n```"
                 )
 
             logfire.info(f"{prefix} - complete (success={result.success})")
