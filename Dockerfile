@@ -26,11 +26,14 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 # Install Claude Code globally
 RUN npm install -g @anthropic-ai/claude-code
 
-# Install PolicyEngine plugin for Claude Code
+# Install plugins and MCP servers for Claude Code
 # Need to set HOME for claude to store config
 ENV HOME=/root
 RUN claude /plugin marketplace add PolicyEngine/policyengine-claude \
-    && claude /plugin install complete@policyengine-claude
+    && claude /plugin install complete@policyengine-claude \
+    && claude /plugin marketplace add i-dot-ai/lex \
+    && claude /plugin install lex-uk-law \
+    && claude mcp add --transport http lex https://lex.lab.i.ai.gov.uk/mcp
 
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
