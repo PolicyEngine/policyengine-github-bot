@@ -359,6 +359,20 @@ async def respond_to_issue(
         logfire.info(f"{prefix} - responded ({len(response_text)} chars)")
 
 
+def format_conversation_context(conversation: list[dict] | None) -> str:
+    """Format conversation history for inclusion in Claude Code prompt."""
+    if not conversation:
+        return ""
+
+    formatted = []
+    for comment in conversation:
+        author = comment["author"]
+        body = comment["body"]
+        formatted.append(f"@{author}:\n{body}")
+
+    return "\n\n---\n\n".join(formatted)
+
+
 async def handle_claude_code_request(
     payload: IssueWebhookPayload, gh_repo, gh_issue, request_text: str
 ):
@@ -371,6 +385,8 @@ async def handle_claude_code_request(
     if issue_has_engineering_label(gh_issue):
         logfire.info(f"{prefix} - skipped (engineering label already present)")
         return
+
+    github = get_github_client(payload.installation.id)
 
     with logfire.span(prefix, repo=repo, issue_number=issue_num):
         # Add engineering label to show we're working on it
@@ -388,6 +404,22 @@ async def handle_claude_code_request(
             default_branch = gh_repo.default_branch
             token = get_installation_token(payload.installation.id)
 
+            # Fetch conversation history for context
+            conversation = get_conversation_context(github, repo, issue_num)
+            # Filter out the progress comment we just created
+            conversation = [c for c in conversation if "⚙️ Working on this..." not in c.get("body", "")]
+            conversation_text = format_conversation_context(conversation)
+            logfire.info(f"{prefix} - loaded {len(conversation)} previous comments")
+
+            # Build conversation section if there are comments
+            conversation_section = ""
+            if conversation_text:
+                conversation_section = f"""
+Previous comments on this issue:
+{conversation_text}
+
+"""
+
             # Build context for Claude Code
             task = f"""You are responding to a GitHub issue.
 
@@ -396,7 +428,7 @@ Issue #{issue_num}: {payload.issue.title}
 
 Issue description:
 {payload.issue.body or "(no description)"}
-
+{conversation_section}
 User request:
 {request_text}
 
@@ -486,6 +518,22 @@ async def handle_pr_claude_code_request(payload: IssueCommentWebhookPayload):
         try:
             token = get_installation_token(payload.installation.id)
 
+            # Fetch conversation history for context
+            conversation = get_conversation_context(github, repo, pr_num)
+            # Filter out the progress comment we just created
+            conversation = [c for c in conversation if "⚙️ Working on this..." not in c.get("body", "")]
+            conversation_text = format_conversation_context(conversation)
+            logfire.info(f"{prefix} - loaded {len(conversation)} previous comments")
+
+            # Build conversation section if there are comments
+            conversation_section = ""
+            if conversation_text:
+                conversation_section = f"""
+Previous comments on this PR:
+{conversation_text}
+
+"""
+
             # Build context for Claude Code with PR-specific info
             task = f"""You are responding to a comment on a GitHub pull request.
 
@@ -496,7 +544,7 @@ Base branch: {gh_pr.base.ref}
 
 PR description:
 {gh_pr.body or "(no description)"}
-
+{conversation_section}
 User request:
 {request_text}
 
