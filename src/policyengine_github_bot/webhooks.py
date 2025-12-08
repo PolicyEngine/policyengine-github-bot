@@ -14,7 +14,7 @@ from policyengine_github_bot.github_auth import (
     get_github_client,
     get_installation_token,
     get_review_threads,
-    is_user_authorized,
+    is_user_authorized_async,
     reply_to_review_thread,
     resolve_review_thread,
 )
@@ -208,7 +208,7 @@ async def handle_issue_event(data: dict):
         return
 
     # Check authorization before invoking Claude Code
-    if not is_user_authorized(payload.installation.id, sender):
+    if not await is_user_authorized_async(payload.installation.id, sender):
         logfire.info(f"{prefix} - unauthorized user @{sender}, skipping Claude Code")
         github = get_github_client(payload.installation.id)
         gh_repo = github.get_repo(repo)
@@ -280,7 +280,7 @@ async def handle_issue_comment_event(data: dict):
     # If this is a PR and we're mentioned, use Claude Code (flexible - can review, commit, etc.)
     if is_pr and mentioned:
         # Check authorization before invoking Claude Code
-        if not is_user_authorized(payload.installation.id, commenter):
+        if not await is_user_authorized_async(payload.installation.id, commenter):
             logfire.info(f"{prefix} - unauthorized user @{commenter}, skipping Claude Code")
             github = get_github_client(payload.installation.id)
             gh_repo = github.get_repo(repo)
@@ -296,7 +296,7 @@ async def handle_issue_comment_event(data: dict):
 
     # Otherwise handle as a normal issue comment
     # Check authorization if mentioned (which triggers Claude Code)
-    if mentioned and not is_user_authorized(payload.installation.id, commenter):
+    if mentioned and not await is_user_authorized_async(payload.installation.id, commenter):
         logfire.info(f"{prefix} - unauthorized user @{commenter}, skipping Claude Code")
         github = get_github_client(payload.installation.id)
         gh_repo = github.get_repo(repo)
@@ -576,7 +576,7 @@ async def handle_pull_request_event(data: dict):
                 logfire.error(f"{prefix} - no installation ID")
                 return
 
-            if not is_user_authorized(payload.installation.id, sender):
+            if not await is_user_authorized_async(payload.installation.id, sender):
                 logfire.info(f"{prefix} - unauthorized user @{sender}, skipping review")
                 github = get_github_client(payload.installation.id)
                 gh_repo = github.get_repo(repo)
@@ -597,7 +597,7 @@ async def handle_pull_request_event(data: dict):
                 logfire.error(f"{prefix} - no installation ID")
                 return
 
-            if not is_user_authorized(payload.installation.id, sender):
+            if not await is_user_authorized_async(payload.installation.id, sender):
                 logfire.info(f"{prefix} - unauthorized user @{sender}, skipping review")
                 github = get_github_client(payload.installation.id)
                 gh_repo = github.get_repo(repo)

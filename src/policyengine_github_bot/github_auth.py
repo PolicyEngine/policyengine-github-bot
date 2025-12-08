@@ -212,18 +212,53 @@ AUTHORIZED_ORG = "PolicyEngine"
 AUTHORIZED_TEAM_SLUG = "core-developers"
 
 
-def is_user_authorized(installation_id: int, username: str) -> bool:
+async def is_user_authorized_async(installation_id: int, username: str) -> bool:
     """Check if a user is a member of the PolicyEngine/core-developers team.
 
+    Uses GraphQL API which has better permission handling for GitHub Apps.
     Returns True if the user is a member, False otherwise.
     """
-    try:
-        github = get_github_client(installation_id)
-        org = github.get_organization(AUTHORIZED_ORG)
-        team = org.get_team_by_slug(AUTHORIZED_TEAM_SLUG)
+    query = """
+    query($org: String!, $team: String!, $username: String!) {
+      organization(login: $org) {
+        team(slug: $team) {
+          members(query: $username, first: 1) {
+            nodes {
+              login
+            }
+          }
+        }
+      }
+    }
+    """
 
-        # Check if the user is a member of the team
-        is_member = team.has_in_members(github.get_user(username))
+    try:
+        result = await graphql_request(
+            installation_id,
+            query,
+            {
+                "org": AUTHORIZED_ORG,
+                "team": AUTHORIZED_TEAM_SLUG,
+                "username": username,
+            },
+        )
+
+        # Check if we got team data (null means no permission or team doesn't exist)
+        team_data = (
+            result.get("data", {}).get("organization", {}).get("team")
+        )
+
+        if team_data is None:
+            logfire.warn(
+                f"[auth] cannot access team {AUTHORIZED_ORG}/{AUTHORIZED_TEAM_SLUG}, "
+                "check GitHub App permissions (needs Organization > Members: Read)"
+            )
+            return False
+
+        members = team_data.get("members", {}).get("nodes", [])
+        is_member = any(
+            m.get("login", "").lower() == username.lower() for m in members
+        )
 
         logfire.info(
             f"[auth] @{username} membership in {AUTHORIZED_ORG}/{AUTHORIZED_TEAM_SLUG}: {is_member}"
@@ -233,3 +268,5 @@ def is_user_authorized(installation_id: int, username: str) -> bool:
         logfire.error(f"[auth] failed to check team membership for @{username}: {e}")
         # Fail closed - deny access if we can't verify
         return False
+
+
