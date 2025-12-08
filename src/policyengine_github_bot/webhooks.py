@@ -36,6 +36,9 @@ BOT_USERNAME = "policyengine-auto"
 BOT_USERNAMES = ["policyengine", "policyengine-auto"]
 MENTION_PATTERN = re.compile(r"@(policyengine|policyengine-auto)\b", re.IGNORECASE)
 
+# Label applied while Claude Code is working on an issue/PR
+ENGINEERING_LABEL = "⚙️ Engineering..."
+
 
 def verify_signature(payload: bytes, signature: str, secret: str) -> bool:
     """Verify the GitHub webhook signature."""
@@ -87,6 +90,17 @@ def bot_is_in_conversation(github, repo_full_name: str, issue_number: int) -> bo
         return False
     except Exception as e:
         logfire.error(f"[context] {repo_full_name}#{issue_number} - error: {e}")
+        return False
+
+
+def issue_has_engineering_label(gh_issue) -> bool:
+    """Check if an issue/PR already has the engineering label (bot is working on it)."""
+    try:
+        for label in gh_issue.labels:
+            if label.name == ENGINEERING_LABEL:
+                return True
+        return False
+    except Exception:
         return False
 
 
@@ -311,9 +325,6 @@ async def respond_to_issue(
         logfire.info(f"{prefix} - responded ({len(response_text)} chars)")
 
 
-ENGINEERING_LABEL = "⚙️ Engineering..."
-
-
 async def handle_claude_code_request(
     payload: IssueWebhookPayload, gh_repo, gh_issue, request_text: str
 ):
@@ -321,6 +332,11 @@ async def handle_claude_code_request(
     repo = payload.repository.full_name
     issue_num = payload.issue.number
     prefix = f"[claude-code] {repo}#{issue_num}"
+
+    # Skip if engineering label is already present (another Claude Code session is working)
+    if issue_has_engineering_label(gh_issue):
+        logfire.info(f"{prefix} - skipped (engineering label already present)")
+        return
 
     with logfire.span(prefix, repo=repo, issue_number=issue_num):
         # Add engineering label to show we're working on it
@@ -368,7 +384,13 @@ Instructions:
 IMPORTANT - Best practices:
 - Commit and push changes BEFORE running tests when possible
 - This preserves your work if anything goes wrong
-- Update the progress comment before running tests so the user knows what's happening"""
+- Update the progress comment before running tests so the user knows what's happening
+
+IMPORTANT - Check for new comments:
+- Periodically check for new comments on this issue (every few minutes or before major steps)
+- Use: `gh api repos/{repo}/issues/{issue_num}/comments --jq '.[] | select(.id > {comment_id}) | {{user: .user.login, body: .body}}'`
+- If someone posts new instructions (especially asking you to stop, change approach, or wait), follow their guidance
+- If asked to stop or not proceed, update your progress comment explaining you've stopped and why"""
 
             logfire.info(f"{prefix} - executing via Claude Code...")
 
@@ -406,12 +428,17 @@ async def handle_pr_claude_code_request(payload: IssueCommentWebhookPayload):
     request_text = payload.comment.body
     prefix = f"[pr-claude-code] {repo}#{pr_num}"
 
-    with logfire.span(prefix, repo=repo, pr_number=pr_num):
-        github = get_github_client(payload.installation.id)
-        gh_repo = github.get_repo(repo)
-        gh_pr = gh_repo.get_pull(pr_num)
-        gh_issue = gh_repo.get_issue(pr_num)
+    github = get_github_client(payload.installation.id)
+    gh_repo = github.get_repo(repo)
+    gh_pr = gh_repo.get_pull(pr_num)
+    gh_issue = gh_repo.get_issue(pr_num)
 
+    # Skip if engineering label is already present (another Claude Code session is working)
+    if issue_has_engineering_label(gh_issue):
+        logfire.info(f"{prefix} - skipped (engineering label already present)")
+        return
+
+    with logfire.span(prefix, repo=repo, pr_number=pr_num):
         # Add engineering label to show we're working on it
         try:
             gh_issue.add_to_labels(ENGINEERING_LABEL)
@@ -457,7 +484,13 @@ Instructions:
 IMPORTANT - Git workflow:
 - The repo will be cloned with the PR branch already checked out
 - Commit and push changes BEFORE running tests when possible
-- This preserves your work if anything goes wrong"""
+- This preserves your work if anything goes wrong
+
+IMPORTANT - Check for new comments:
+- Periodically check for new comments on this PR (every few minutes or before major steps)
+- Use: `gh api repos/{repo}/issues/{pr_num}/comments --jq '.[] | select(.id > {comment_id}) | {{user: .user.login, body: .body}}'`
+- If someone posts new instructions (especially asking you to stop, change approach, or wait), follow their guidance
+- If asked to stop or not proceed, update your progress comment explaining you've stopped and why"""
 
             logfire.info(f"{prefix} - executing via Claude Code...")
 
@@ -537,11 +570,16 @@ async def review_pull_request(payload: PullRequestWebhookPayload):
         logfire.error(f"{prefix} - no installation ID")
         return
 
-    with logfire.span(prefix, repo=repo, pr_number=pr_num):
-        github = get_github_client(payload.installation.id)
-        gh_repo = github.get_repo(repo)
-        gh_pr = gh_repo.get_pull(pr_num)
+    github = get_github_client(payload.installation.id)
+    gh_repo = github.get_repo(repo)
+    gh_pr = gh_repo.get_pull(pr_num)
 
+    # Skip if engineering label is already present (another Claude Code session is working)
+    if issue_has_engineering_label(gh_pr):
+        logfire.info(f"{prefix} - skipped (engineering label already present)")
+        return
+
+    with logfire.span(prefix, repo=repo, pr_number=pr_num):
         # Add engineering label to show we're working on it
         try:
             gh_pr.add_to_labels(ENGINEERING_LABEL)
@@ -594,7 +632,13 @@ After posting your review, delete the progress comment:
 IMPORTANT - Best practices:
 - If making fixes, commit and push BEFORE running tests when possible
 - Post your review before running any tests - this preserves your feedback
-- Update the progress comment before running intensive operations"""
+- Update the progress comment before running intensive operations
+
+IMPORTANT - Check for new comments:
+- Periodically check for new comments on this PR (every few minutes or before major steps)
+- Use: `gh api repos/{repo}/issues/{pr_num}/comments --jq '.[] | select(.id > {comment_id}) | {{user: .user.login, body: .body}}'`
+- If someone posts new instructions (especially asking you to stop, change approach, or wait), follow their guidance
+- If asked to stop or not proceed, update your progress comment explaining you've stopped and why"""
 
             logfire.info(f"{prefix} - reviewing via Claude Code...")
 
