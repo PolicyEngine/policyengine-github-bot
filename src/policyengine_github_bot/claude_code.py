@@ -284,7 +284,7 @@ async def execute_task(
     task: str,
     issue_number: int | None = None,
     token: str | None = None,
-    timeout: int = 600,
+    timeout: int = 1200,
 ) -> TaskResult:
     """Use Claude Code to execute a task in a repository.
 
@@ -297,7 +297,7 @@ async def execute_task(
         task: Description of what to do
         issue_number: Related issue number (for branch naming, PR linking)
         token: GitHub token for auth (required for pushing)
-        timeout: Timeout in seconds (default 10 minutes)
+        timeout: Timeout in seconds (default 20 minutes)
 
     Returns:
         TaskResult with output, success status, and PR URL if created
