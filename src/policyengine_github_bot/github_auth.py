@@ -205,3 +205,31 @@ async def reply_to_review_thread(
     except Exception as e:
         logfire.error(f"[graphql] failed to reply to thread {thread_id[:8]}...: {e}")
         return False
+
+
+# Organization and team for authorization
+AUTHORIZED_ORG = "PolicyEngine"
+AUTHORIZED_TEAM_SLUG = "core-developers"
+
+
+def is_user_authorized(installation_id: int, username: str) -> bool:
+    """Check if a user is a member of the PolicyEngine/core-developers team.
+
+    Returns True if the user is a member, False otherwise.
+    """
+    try:
+        github = get_github_client(installation_id)
+        org = github.get_organization(AUTHORIZED_ORG)
+        team = org.get_team_by_slug(AUTHORIZED_TEAM_SLUG)
+
+        # Check if the user is a member of the team
+        is_member = team.has_in_members(github.get_user(username))
+
+        logfire.info(
+            f"[auth] @{username} membership in {AUTHORIZED_ORG}/{AUTHORIZED_TEAM_SLUG}: {is_member}"
+        )
+        return is_member
+    except Exception as e:
+        logfire.error(f"[auth] failed to check team membership for @{username}: {e}")
+        # Fail closed - deny access if we can't verify
+        return False

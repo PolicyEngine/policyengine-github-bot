@@ -14,6 +14,7 @@ from policyengine_github_bot.github_auth import (
     get_github_client,
     get_installation_token,
     get_review_threads,
+    is_user_authorized,
     reply_to_review_thread,
     resolve_review_thread,
 )
@@ -192,6 +193,17 @@ async def handle_issue_event(data: dict):
         logfire.error(f"{prefix} - no installation ID")
         return
 
+    # Check authorization before invoking Claude Code
+    if not is_user_authorized(payload.installation.id, sender):
+        logfire.info(f"{prefix} - unauthorized user @{sender}, skipping Claude Code")
+        github = get_github_client(payload.installation.id)
+        gh_repo = github.get_repo(repo)
+        gh_issue = gh_repo.get_issue(issue_num)
+        gh_issue.create_comment(
+            f"Sorry @{sender}, only members of the [PolicyEngine/core-developers](https://github.com/orgs/PolicyEngine/teams/core-developers) team can invoke Claude Code."
+        )
+        return
+
     await respond_to_issue(payload, was_mentioned=True)
 
 
@@ -253,11 +265,33 @@ async def handle_issue_comment_event(data: dict):
 
     # If this is a PR and we're mentioned, use Claude Code (flexible - can review, commit, etc.)
     if is_pr and mentioned:
+        # Check authorization before invoking Claude Code
+        if not is_user_authorized(payload.installation.id, commenter):
+            logfire.info(f"{prefix} - unauthorized user @{commenter}, skipping Claude Code")
+            github = get_github_client(payload.installation.id)
+            gh_repo = github.get_repo(repo)
+            gh_issue = gh_repo.get_issue(issue_num)
+            gh_issue.create_comment(
+                f"Sorry @{commenter}, only members of the [PolicyEngine/core-developers](https://github.com/orgs/PolicyEngine/teams/core-developers) team can invoke Claude Code."
+            )
+            return
+
         logfire.info(f"{prefix} - triggering PR Claude Code request")
         await handle_pr_claude_code_request(payload)
         return
 
     # Otherwise handle as a normal issue comment
+    # Check authorization if mentioned (which triggers Claude Code)
+    if mentioned and not is_user_authorized(payload.installation.id, commenter):
+        logfire.info(f"{prefix} - unauthorized user @{commenter}, skipping Claude Code")
+        github = get_github_client(payload.installation.id)
+        gh_repo = github.get_repo(repo)
+        gh_issue = gh_repo.get_issue(issue_num)
+        gh_issue.create_comment(
+            f"Sorry @{commenter}, only members of the [PolicyEngine/core-developers](https://github.com/orgs/PolicyEngine/teams/core-developers) team can invoke Claude Code."
+        )
+        return
+
     issue_payload = IssueWebhookPayload(
         action="comment",
         issue=payload.issue,
@@ -504,6 +538,20 @@ async def handle_pull_request_event(data: dict):
         reviewer_login = requested_reviewer.get("login", "").lower()
 
         if reviewer_login in [u.lower() for u in BOT_USERNAMES]:
+            # Check authorization before invoking Claude Code
+            if not payload.installation:
+                logfire.error(f"{prefix} - no installation ID")
+                return
+
+            if not is_user_authorized(payload.installation.id, sender):
+                logfire.info(f"{prefix} - unauthorized user @{sender}, skipping review")
+                github = get_github_client(payload.installation.id)
+                gh_repo = github.get_repo(repo)
+                gh_repo.get_issue(pr_num).create_comment(
+                    f"Sorry @{sender}, only members of the [PolicyEngine/core-developers](https://github.com/orgs/PolicyEngine/teams/core-developers) team can request reviews from me."
+                )
+                return
+
             logfire.info(f"{prefix} - review requested, will review")
             await review_pull_request(payload)
             return
@@ -511,6 +559,20 @@ async def handle_pull_request_event(data: dict):
     # Check if mentioned in PR body on open
     if payload.action == "opened":
         if contains_mention(payload.pull_request.body):
+            # Check authorization before invoking Claude Code
+            if not payload.installation:
+                logfire.error(f"{prefix} - no installation ID")
+                return
+
+            if not is_user_authorized(payload.installation.id, sender):
+                logfire.info(f"{prefix} - unauthorized user @{sender}, skipping review")
+                github = get_github_client(payload.installation.id)
+                gh_repo = github.get_repo(repo)
+                gh_repo.get_issue(pr_num).create_comment(
+                    f"Sorry @{sender}, only members of the [PolicyEngine/core-developers](https://github.com/orgs/PolicyEngine/teams/core-developers) team can invoke Claude Code."
+                )
+                return
+
             logfire.info(f"{prefix} - bot mentioned in new PR, will review")
             await review_pull_request(payload)
             return
