@@ -315,6 +315,16 @@ IMPORTANT - Memory constraints (4GB limit):
 - Commit and push BEFORE running tests or intensive operations when possible
 - This preserves your work if anything goes wrong
 
+IMPORTANT - Timeout management (20 minute hard limit):
+- You have a 20 minute timeout for this entire task
+- Log your start time immediately at the beginning: `date +%s`
+- Check elapsed time before major operations: `echo "Elapsed: $(($(date +%s) - START_TIME))s / 1200s"`
+- With ~3 minutes remaining (17 min elapsed), begin wrapping up:
+  * Commit and push any work in progress
+  * Update any progress comments with what you accomplished and what remains
+  * If work is incomplete, create a detailed handoff comment explaining next steps
+- Better to preserve partial work than lose everything to a timeout
+
 Your response will be posted as a GitHub comment. Write like a human - be direct, no unnecessary headers or formatting. Just say what you did or found."""
 
     # Extract repo name for span
