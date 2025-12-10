@@ -284,7 +284,7 @@ async def execute_task(
     task: str,
     issue_number: int | None = None,
     token: str | None = None,
-    timeout: int = 1200,
+    timeout: int = 1800,
 ) -> TaskResult:
     """Use Claude Code to execute a task in a repository.
 
@@ -297,7 +297,7 @@ async def execute_task(
         task: Description of what to do
         issue_number: Related issue number (for branch naming, PR linking)
         token: GitHub token for auth (required for pushing)
-        timeout: Timeout in seconds (default 20 minutes)
+        timeout: Timeout in seconds (default 30 minutes)
 
     Returns:
         TaskResult with output, success status, and PR URL if created
@@ -315,15 +315,21 @@ IMPORTANT - Memory constraints (4GB limit):
 - Commit and push BEFORE running tests or intensive operations when possible
 - This preserves your work if anything goes wrong
 
-IMPORTANT - Timeout management (20 minute hard limit):
-- You have a 20 minute timeout for this entire task
+IMPORTANT - Timeout management (30 minute hard limit):
+- You have a 30 minute timeout for this entire task
 - Log your start time immediately at the beginning: `date +%s`
-- Check elapsed time before major operations: `echo "Elapsed: $(($(date +%s) - START_TIME))s / 1200s"`
-- With ~3 minutes remaining (17 min elapsed), begin wrapping up:
+- Check elapsed time before major operations: `echo "Elapsed: $(($(date +%s) - START_TIME))s / 1800s"`
+- With ~3 minutes remaining (27 min elapsed), begin wrapping up:
   * Commit and push any work in progress
   * Update any progress comments with what you accomplished and what remains
   * If work is incomplete, create a detailed handoff comment explaining next steps
 - Better to preserve partial work than lose everything to a timeout
+
+IMPORTANT - Cost management ($1 limit):
+- Monitor API costs throughout your session
+- If you estimate costs are approaching $1, wrap up your work immediately
+- Use the /tasks command to check current usage if available
+- Better to stop early and preserve budget than exceed the $1 limit
 
 Your response will be posted as a GitHub comment. Write like a human - be direct, no unnecessary headers or formatting. Just say what you did or found."""
 

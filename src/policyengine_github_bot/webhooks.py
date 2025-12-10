@@ -458,15 +458,21 @@ IMPORTANT - Check for new comments:
 - If someone posts new instructions (especially asking you to stop, change approach, or wait), follow their guidance
 - If asked to stop or not proceed, update your progress comment explaining you've stopped and why
 
-IMPORTANT - Timeout management (20 minute hard limit):
-- You have a 20 minute timeout for this entire task
+IMPORTANT - Timeout management (30 minute hard limit):
+- You have a 30 minute timeout for this entire task
 - Log your start time immediately at the beginning: `date +%s`
-- Check elapsed time before major operations: `echo "Elapsed: $(($(date +%s) - START_TIME))s / 1200s"`
-- With ~3 minutes remaining (17 min elapsed), begin wrapping up:
+- Check elapsed time before major operations: `echo "Elapsed: $(($(date +%s) - START_TIME))s / 1800s"`
+- With ~3 minutes remaining (27 min elapsed), begin wrapping up:
   * Commit and push any work in progress
   * Update the progress comment with what you accomplished and what remains
   * If work is incomplete, create a detailed handoff comment explaining next steps
-- Better to preserve partial work than lose everything to a timeout"""
+- Better to preserve partial work than lose everything to a timeout
+
+IMPORTANT - Cost management ($1 limit):
+- Monitor API costs throughout your session
+- If you estimate costs are approaching $1, wrap up your work immediately
+- Use the /tasks command to check current usage if available
+- Better to stop early and preserve budget than exceed the $1 limit"""
 
             logfire.info(f"{prefix} - executing via Claude Code...")
 
@@ -584,15 +590,21 @@ IMPORTANT - Check for new comments:
 - If someone posts new instructions (especially asking you to stop, change approach, or wait), follow their guidance
 - If asked to stop or not proceed, update your progress comment explaining you've stopped and why
 
-IMPORTANT - Timeout management (20 minute hard limit):
-- You have a 20 minute timeout for this entire task
+IMPORTANT - Timeout management (30 minute hard limit):
+- You have a 30 minute timeout for this entire task
 - Log your start time immediately at the beginning: `date +%s`
-- Check elapsed time before major operations: `echo "Elapsed: $(($(date +%s) - START_TIME))s / 1200s"`
-- With ~3 minutes remaining (17 min elapsed), begin wrapping up:
+- Check elapsed time before major operations: `echo "Elapsed: $(($(date +%s) - START_TIME))s / 1800s"`
+- With ~3 minutes remaining (27 min elapsed), begin wrapping up:
   * Commit and push any work in progress
   * Update the progress comment with what you accomplished and what remains
   * If work is incomplete, create a detailed handoff comment explaining next steps
-- Better to preserve partial work than lose everything to a timeout"""
+- Better to preserve partial work than lose everything to a timeout
+
+IMPORTANT - Cost management ($1 limit):
+- Monitor API costs throughout your session
+- If you estimate costs are approaching $1, wrap up your work immediately
+- Use the /tasks command to check current usage if available
+- Better to stop early and preserve budget than exceed the $1 limit"""
 
             logfire.info(f"{prefix} - executing via Claude Code...")
 
@@ -770,15 +782,21 @@ IMPORTANT - Check for new comments:
 - If someone posts new instructions (especially asking you to stop, change approach, or wait), follow their guidance
 - If asked to stop or not proceed, update your progress comment explaining you've stopped and why
 
-IMPORTANT - Timeout management (20 minute hard limit):
-- You have a 20 minute timeout for this entire task
+IMPORTANT - Timeout management (30 minute hard limit):
+- You have a 30 minute timeout for this entire task
 - Log your start time immediately at the beginning: `date +%s`
-- Check elapsed time before major operations: `echo "Elapsed: $(($(date +%s) - START_TIME))s / 1200s"`
-- With ~3 minutes remaining (17 min elapsed), begin wrapping up:
+- Check elapsed time before major operations: `echo "Elapsed: $(($(date +%s) - START_TIME))s / 1800s"`
+- With ~3 minutes remaining (27 min elapsed), begin wrapping up:
   * Commit and push any work in progress
   * Update the progress comment with what you accomplished and what remains
   * If work is incomplete, create a detailed handoff comment explaining next steps
-- Better to preserve partial work than lose everything to a timeout"""
+- Better to preserve partial work than lose everything to a timeout
+
+IMPORTANT - Cost management ($1 limit):
+- Monitor API costs throughout your session
+- If you estimate costs are approaching $1, wrap up your work immediately
+- Use the /tasks command to check current usage if available
+- Better to stop early and preserve budget than exceed the $1 limit"""
 
             logfire.info(f"{prefix} - reviewing via Claude Code...")
 
